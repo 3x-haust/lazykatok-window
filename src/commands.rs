@@ -1,8 +1,19 @@
-use crate::cli::{Commands, PermissionsCommand, SearchCommand, SourceCommand};
+use crate::cli::{Commands, PermissionsCommand, SearchCommand, SourceCommand, WatchOutputFormat};
 use crate::commands::source_adapter::adapter_for_source;
 use crate::support::{dependency_status, print_payload};
 use anyhow::{Context, Result};
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
+    execute, queue,
+    style::Print,
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use katok::{
+    adapters::ChatSummary,
     archive::Archive,
     chunking::{
         rebuild_chunks_for_chats, rebuild_chunks_with_settings, ChunkSettings, CHUNKER_VERSION,
@@ -11,10 +22,23 @@ use katok::{
     search::{bm25_search_with_snippet, keyword_search_with_snippet},
     semantic::semantic_search_live_with_config,
     transcript::export_transcript,
-    types::SyncTimings,
+    types::{RawMessage, SyncReport, SyncTimings},
+    watch::WATCH_EVENT_SCHEMA_VERSION,
+    watch::{
+        chat_count, format_human_message_line, parse_reply_command, sanitize_terminal_text,
+        ReplyCommand, ReplyUiState, WatchEvent,
+    },
+    watch::{WatchSnapshot, WatchState},
 };
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(all(target_os = "macos", feature = "private-send"))]
+use std::ffi::OsString;
+#[cfg(all(target_os = "macos", feature = "private-send"))]
+use std::process::{Command as ProcessCommand, Stdio};
 
 mod chunk_commands;
 mod freshness;
@@ -22,6 +46,125 @@ mod index_commands;
 mod media_commands;
 mod permissions;
 mod source_adapter;
+
+enum ReplyTerminalAction {
+    Submit(String),
+    Quit,
+}
+
+struct ReplyTerminal {
+    output: io::Stdout,
+    state: ReplyUiState,
+    active: bool,
+}
+
+impl ReplyTerminal {
+    fn new() -> Result<Self> {
+        terminal::enable_raw_mode().context("enable reply terminal raw mode")?;
+        let mut output = io::stdout();
+        if let Err(error) = execute!(output, EnterAlternateScreen, EnableBracketedPaste, Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(error).context("initialize reply terminal screen");
+        }
+        let mut terminal = Self {
+            output,
+            state: ReplyUiState::default(),
+            active: true,
+        };
+        terminal.render()?;
+        Ok(terminal)
+    }
+
+    fn push_line(&mut self, line: impl Into<String>) -> Result<()> {
+        self.state.push_line(line);
+        self.render()
+    }
+
+    fn poll_action(&mut self, timeout: Duration) -> Result<Option<ReplyTerminalAction>> {
+        if !event::poll(timeout).context("poll reply terminal input")? {
+            return Ok(None);
+        }
+        match event::read().context("read reply terminal input")? {
+            Event::Resize(_, _) => self.render()?,
+            Event::Paste(text) => {
+                self.state.paste(&text);
+                self.render()?;
+            }
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('c' | 'd'))
+                {
+                    return Ok(Some(ReplyTerminalAction::Quit));
+                }
+                match key.code {
+                    KeyCode::Enter => {
+                        return Ok(Some(ReplyTerminalAction::Submit(self.state.take_draft())));
+                    }
+                    KeyCode::Backspace => {
+                        self.state.backspace();
+                        self.render()?;
+                    }
+                    KeyCode::Char(character)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        self.state.insert(character);
+                        self.render()?;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    fn render(&mut self) -> Result<()> {
+        let (width, height) = terminal::size().context("read reply terminal size")?;
+        let frame = self.state.frame(width, height);
+        queue!(self.output, Hide, MoveTo(0, 0), Clear(ClearType::All))
+            .context("clear reply terminal")?;
+        for (row, line) in frame.conversation.iter().enumerate() {
+            let Ok(row) = u16::try_from(row) else {
+                break;
+            };
+            if row >= height.saturating_sub(2) {
+                break;
+            }
+            queue!(self.output, MoveTo(0, row), Print(line)).context("draw reply history")?;
+        }
+        let separator_row = height.saturating_sub(2);
+        let input_row = height.saturating_sub(1);
+        queue!(
+            self.output,
+            MoveTo(0, separator_row),
+            Print(&frame.separator),
+            MoveTo(0, input_row),
+            Print(&frame.input),
+            MoveTo(frame.cursor_column.min(width.saturating_sub(1)), input_row),
+            Show
+        )
+        .context("draw reply input")?;
+        self.output.flush().context("flush reply terminal")?;
+        Ok(())
+    }
+}
+
+impl Drop for ReplyTerminal {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = execute!(
+                self.output,
+                Show,
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
+            let _ = terminal::disable_raw_mode();
+            self.active = false;
+        }
+    }
+}
 
 pub(crate) fn command_requests_json(command: &Commands) -> bool {
     match command {
@@ -31,6 +174,12 @@ pub(crate) fn command_requests_json(command: &Commands) -> bool {
         | Commands::WipeIndex { json, .. }
         | Commands::Chunks { json, .. }
         | Commands::Transcript { json, .. } => *json,
+        Commands::Watch {
+            select,
+            format,
+            reply,
+            ..
+        } => effective_watch_format(*select || *reply, *format) == WatchOutputFormat::Jsonl,
         Commands::Search { command } => match command {
             SearchCommand::Keyword { json, .. }
             | SearchCommand::Bm25 { json, .. }
@@ -118,6 +267,38 @@ pub(crate) fn run(
             out,
             json,
         } => run_transcript(&chat, since.as_deref(), out, json, &archive_path, &data_dir),
+        Commands::Watch {
+            source,
+            path,
+            chat,
+            select,
+            format,
+            reply,
+            reply_no_open,
+            accept_use_policy,
+            tail,
+            poll_ms,
+            once,
+            max_polls,
+            replay_existing,
+        } => run_watch(
+            source,
+            path,
+            chat,
+            select,
+            format,
+            reply,
+            reply_no_open,
+            accept_use_policy,
+            tail,
+            poll_ms,
+            once,
+            max_polls,
+            replay_existing,
+            &config,
+            &archive_path,
+            &data_dir,
+        ),
         Commands::WipeIndex { yes, json } => run_wipe_index(yes, json, &semantic_dir),
         #[cfg(all(target_os = "macos", feature = "private-send"))]
         Commands::Send {
@@ -130,6 +311,7 @@ pub(crate) fn run(
             limit,
             dry_run,
             no_open,
+            background_only,
             draft,
             take_focus_now,
             focus_wait,
@@ -145,6 +327,7 @@ pub(crate) fn run(
             limit,
             dry_run,
             no_open,
+            background_only,
             draft,
             take_focus_now,
             focus_wait,
@@ -153,6 +336,547 @@ pub(crate) fn run(
             &archive_path,
         ),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_watch(
+    source: Option<String>,
+    path: Option<PathBuf>,
+    chat: Option<String>,
+    select: bool,
+    format: Option<WatchOutputFormat>,
+    reply: bool,
+    reply_no_open: bool,
+    accept_use_policy: bool,
+    tail: u64,
+    poll_ms: u64,
+    once: bool,
+    max_polls: Option<u64>,
+    replay_existing: bool,
+    config: &KatokConfig,
+    archive_path: &Path,
+    data_dir: &Path,
+) -> Result<()> {
+    let source = source.unwrap_or_else(|| config.source_adapter.clone());
+    let format = effective_watch_format(select || reply, format);
+    if reply {
+        if format != WatchOutputFormat::Text {
+            anyhow::bail!("reply mode is only available with --format text");
+        }
+        if chat.is_none() && !select {
+            anyhow::bail!("reply mode requires --chat or --select");
+        }
+        if !accept_use_policy {
+            anyhow::bail!(
+                "refusing to continue without --accept-use-policy; read \
+                 ACCEPTABLE_USE_POLICY.md and DISCLAIMER.md"
+            );
+        }
+        if !io::stdin().is_terminal() {
+            anyhow::bail!(
+                "reply mode requires an interactive terminal; piped or redirected input is not sent"
+            );
+        }
+        if !io::stdout().is_terminal() {
+            anyhow::bail!("reply mode requires an interactive output terminal");
+        }
+    }
+    let poll_interval = Duration::from_millis(poll_ms);
+    let max_polls = if once { Some(1) } else { max_polls };
+    let mut snapshot = WatchSnapshot::default();
+    let mut stdout = std::io::stdout();
+    let mut chat = chat;
+    let mut selected_chat_name = None;
+    let mut archive_counts = None;
+
+    if select {
+        let selected = select_watch_chat(&source, path.clone(), data_dir)?;
+        selected_chat_name = Some(selected.chat_name);
+        chat = Some(selected.chat_id);
+    }
+
+    let mut reply_terminal = if reply {
+        let mut terminal = ReplyTerminal::new()?;
+        terminal.push_line("katok: starting terminal watch; press Ctrl-C to stop")?;
+        terminal.push_line(
+            "katok: reply mode enabled; type a message and press Enter to send, /help for commands, /quit to stop",
+        )?;
+        Some(terminal)
+    } else {
+        None
+    };
+
+    if format == WatchOutputFormat::Jsonl {
+        print_jsonl_event(
+            &mut stdout,
+            &WatchEvent::State {
+                schema_version: WATCH_EVENT_SCHEMA_VERSION,
+                state: WatchState::Started,
+                poll: 0,
+                observed_messages: 0,
+                observed_chats: 0,
+                emitted_messages: 0,
+                archived_messages: None,
+                chunks: None,
+            },
+        )?;
+    } else if !reply {
+        eprintln!("katok: starting terminal watch; press Ctrl-C to stop");
+    }
+
+    let mut poll = 0u64;
+    loop {
+        poll += 1;
+        let poll_started = Instant::now();
+        let next_poll_at = poll_started + poll_interval;
+        let read_started = poll_started;
+        if format == WatchOutputFormat::Jsonl {
+            print_jsonl_event(
+                &mut stdout,
+                &WatchEvent::State {
+                    schema_version: WATCH_EVENT_SCHEMA_VERSION,
+                    state: WatchState::Reading,
+                    poll,
+                    observed_messages: snapshot.seen_count(),
+                    observed_chats: 0,
+                    emitted_messages: 0,
+                    archived_messages: None,
+                    chunks: None,
+                },
+            )?;
+        } else if poll == 1 && !reply {
+            eprintln!("katok: reading source {source}...");
+        }
+        // Build a fresh adapter each pass. The macOS adapter memoizes one read
+        // per instance, which is correct for `sync` but a watch loop must see
+        // source changes made after the previous poll.
+        let adapter = adapter_for_source(&source, path.clone(), data_dir)?;
+        let messages = adapter.messages().context("read source messages")?;
+        let read_source = read_started.elapsed().as_millis();
+        if selected_chat_name.is_none() {
+            selected_chat_name = chat
+                .as_deref()
+                .and_then(|chat_id| find_chat_name(&messages, chat_id));
+        }
+        let text_replay = format == WatchOutputFormat::Text && chat.is_some();
+        let events = snapshot.diff(
+            &messages,
+            poll,
+            replay_existing || text_replay,
+            chat.as_deref(),
+        );
+        let events = if format == WatchOutputFormat::Text && poll == 1 {
+            tail_events(events, tail as usize)
+        } else {
+            events
+        };
+        let emitted_messages = events.len();
+        let (archive_changed, archived_messages, chunks) = if snapshot.source_changed() {
+            let report = sync_watch_messages(
+                &messages,
+                read_source,
+                &source,
+                config,
+                archive_path,
+                data_dir,
+            )
+            .context("sync watched messages")?;
+            let counts = (report.total_messages, report.chunks);
+            archive_counts = Some(counts);
+            (
+                report.inserted_messages > 0 || report.updated_messages > 0,
+                counts.0,
+                counts.1,
+            )
+        } else {
+            let (archived_messages, chunks) = archive_counts
+                .context("watch archive counts missing after the initial source snapshot")?;
+            // A successful unchanged poll is still a successful freshness check.
+            // Preserve that timestamp while avoiding the full archive/chunk pass.
+            freshness::record_sync(data_dir, &source, archived_messages, chunks)?;
+            (false, archived_messages, chunks)
+        };
+
+        for event in events {
+            match format {
+                WatchOutputFormat::Jsonl => print_jsonl_event(&mut stdout, &event)?,
+                WatchOutputFormat::Text => {
+                    if let Some(terminal) = reply_terminal.as_mut() {
+                        if let WatchEvent::Message {
+                            change, message, ..
+                        } = &event
+                        {
+                            terminal.push_line(format_human_message_line(*change, message))?;
+                        }
+                    } else {
+                        print_text_event(&mut stdout, &event)?;
+                    }
+                }
+            }
+        }
+
+        if format == WatchOutputFormat::Jsonl {
+            print_jsonl_event(
+                &mut stdout,
+                &WatchEvent::State {
+                    schema_version: WATCH_EVENT_SCHEMA_VERSION,
+                    state: if emitted_messages > 0 || archive_changed {
+                        WatchState::Synced
+                    } else {
+                        WatchState::Idle
+                    },
+                    poll,
+                    observed_messages: messages.len(),
+                    observed_chats: chat_count(&messages),
+                    emitted_messages,
+                    archived_messages: Some(archived_messages),
+                    chunks: Some(chunks),
+                },
+            )?;
+        } else if poll == 1 {
+            let label = selected_chat_name
+                .as_deref()
+                .map(sanitize_terminal_text)
+                .unwrap_or_else(|| "selected chat".to_string());
+            let status = format!(
+                "katok: watching {label}; displayed {emitted_messages} recent message(s); observed {} message(s) across {} chat(s)",
+                messages.len(), chat_count(&messages)
+            );
+            if let Some(terminal) = reply_terminal.as_mut() {
+                terminal.push_line(status)?;
+                terminal.push_line(format!("katok: replies target {label}"))?;
+            } else {
+                eprintln!("{status}");
+            }
+        }
+
+        if let Some(terminal) = reply_terminal.as_mut() {
+            if process_pending_reply_events(terminal, chat.as_deref(), reply_no_open, data_dir)? {
+                break;
+            }
+        }
+
+        if max_polls.is_some_and(|limit| poll >= limit) {
+            break;
+        }
+        let remaining = remaining_poll_delay(next_poll_at, Instant::now());
+        if let Some(terminal) = reply_terminal.as_mut() {
+            if wait_for_next_poll_with_reply(
+                terminal,
+                chat.as_deref(),
+                reply_no_open,
+                data_dir,
+                remaining,
+            )? {
+                break;
+            }
+        } else {
+            thread::sleep(remaining);
+        }
+    }
+
+    Ok(())
+}
+
+fn effective_watch_format(
+    human_default: bool,
+    format: Option<WatchOutputFormat>,
+) -> WatchOutputFormat {
+    format.unwrap_or(if human_default {
+        WatchOutputFormat::Text
+    } else {
+        WatchOutputFormat::Jsonl
+    })
+}
+
+fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Result<ChatSummary> {
+    eprintln!("katok: reading chat list from {source}...");
+    let adapter = adapter_for_source(source, path, data_dir)?;
+    let mut chats = adapter.chats().context("list source chats")?;
+    if chats.is_empty() {
+        anyhow::bail!("no chats found in source");
+    }
+    chats.sort_by(|left, right| {
+        left.chat_name
+            .cmp(&right.chat_name)
+            .then_with(|| left.chat_id.cmp(&right.chat_id))
+    });
+
+    let mut stderr = io::stderr().lock();
+    writeln!(stderr, "Choose a chat to watch:").context("write chat selection prompt")?;
+    for (index, chat) in chats.iter().enumerate() {
+        writeln!(
+            stderr,
+            "{:>3}. {} ({}, {})",
+            index + 1,
+            sanitize_terminal_text(&chat.chat_name),
+            sanitize_terminal_text(&chat.chat_type),
+            sanitize_terminal_text(&chat.chat_id)
+        )
+        .context("write chat selection option")?;
+    }
+    write!(stderr, "chat number or chat_id> ").context("write chat selection input prompt")?;
+    stderr.flush().context("flush chat selection prompt")?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("read selected chat")?;
+    let input = input.trim();
+    if input.is_empty() {
+        anyhow::bail!("no chat selected");
+    }
+    if let Ok(index) = input.parse::<usize>() {
+        return chats
+            .get(index.saturating_sub(1))
+            .cloned()
+            .with_context(|| format!("chat number {index} is out of range"));
+    }
+    chats
+        .into_iter()
+        .find(|chat| chat.chat_id == input)
+        .with_context(|| format!("no chat_id {input} in source"))
+}
+
+fn find_chat_name(messages: &[RawMessage], chat_id: &str) -> Option<String> {
+    messages
+        .iter()
+        .find(|message| message.chat_id == chat_id)
+        .map(|message| message.chat_name.clone())
+}
+
+fn tail_events(mut events: Vec<WatchEvent>, tail: usize) -> Vec<WatchEvent> {
+    if events.len() > tail {
+        events.split_off(events.len() - tail)
+    } else {
+        events
+    }
+}
+
+fn print_text_event(stdout: &mut impl Write, event: &WatchEvent) -> Result<()> {
+    if let WatchEvent::Message {
+        change, message, ..
+    } = event
+    {
+        writeln!(stdout, "{}", format_human_message_line(*change, message))
+            .context("write watch text line")?;
+        stdout.flush().context("flush watch text line")?;
+    }
+    Ok(())
+}
+
+fn print_jsonl_event(stdout: &mut impl Write, event: &WatchEvent) -> Result<()> {
+    serde_json::to_writer(&mut *stdout, event).context("serialize watch event")?;
+    writeln!(stdout).context("write watch event")?;
+    stdout.flush().context("flush watch event")?;
+    Ok(())
+}
+
+fn process_pending_reply_events(
+    terminal: &mut ReplyTerminal,
+    chat_id: Option<&str>,
+    no_open: bool,
+    data_dir: &Path,
+) -> Result<bool> {
+    while let Some(action) = terminal.poll_action(Duration::ZERO)? {
+        if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn process_reply_action(
+    terminal: &mut ReplyTerminal,
+    action: ReplyTerminalAction,
+    chat_id: Option<&str>,
+    no_open: bool,
+    data_dir: &Path,
+) -> Result<bool> {
+    let ReplyTerminalAction::Submit(line) = action else {
+        return Ok(true);
+    };
+    match parse_reply_command(1, &line) {
+        ReplyCommand::Send(body) => {
+            let chat_id = chat_id.context("watch --reply has no selected chat")?;
+            match send_reply_to_chat(chat_id, &body, no_open, data_dir) {
+                Ok(chars) => terminal.push_line(format!("katok: sent reply ({chars} chars)"))?,
+                Err(err) => terminal.push_line(format!("katok: send failed: {err:#}"))?,
+            }
+        }
+        ReplyCommand::Quit => return Ok(true),
+        ReplyCommand::Help => terminal.push_line(
+            "katok: type a message and press Enter to send; commands: /send message, /help, /quit",
+        )?,
+        ReplyCommand::Empty => {}
+        ReplyCommand::Ignored => terminal.push_line("katok: not sent; unknown slash command")?,
+    }
+    Ok(false)
+}
+
+fn remaining_poll_delay(deadline: Instant, now: Instant) -> Duration {
+    deadline.saturating_duration_since(now)
+}
+
+fn wait_for_next_poll_with_reply(
+    terminal: &mut ReplyTerminal,
+    chat_id: Option<&str>,
+    no_open: bool,
+    data_dir: &Path,
+    poll_interval: Duration,
+) -> Result<bool> {
+    let deadline = Instant::now() + poll_interval;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        if let Some(action) = terminal.poll_action(remaining.min(Duration::from_millis(250)))? {
+            if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
+                return Ok(true);
+            }
+        }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "private-send"))]
+fn send_reply_to_chat(chat_id: &str, body: &str, no_open: bool, data_dir: &Path) -> Result<usize> {
+    let mut command = ProcessCommand::new(std::env::current_exe().context("resolve katok binary")?);
+    command.args(reply_send_args(chat_id, no_open, data_dir));
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("start katok send")?;
+    {
+        let stdin = child.stdin.as_mut().context("open katok send stdin")?;
+        stdin
+            .write_all(body.as_bytes())
+            .context("write reply body to katok send")?;
+        stdin
+            .write_all(b"\n")
+            .context("finish reply body for katok send")?;
+    }
+    let output = child.wait_with_output().context("wait for katok send")?;
+    if !output.status.success() {
+        let detail = send_child_error_detail(output.status, &output.stdout, &output.stderr);
+        anyhow::bail!("{detail}");
+    }
+    Ok(body.chars().count())
+}
+
+#[cfg(all(target_os = "macos", feature = "private-send"))]
+fn reply_send_args(chat_id: &str, no_open: bool, data_dir: &Path) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("--data-dir"),
+        data_dir.as_os_str().to_os_string(),
+        OsString::from("send"),
+        OsString::from("--chat"),
+        OsString::from(chat_id),
+        OsString::from("--accept-use-policy"),
+        OsString::from("--json"),
+    ];
+    if no_open {
+        args.push(OsString::from("--no-open"));
+        args.push(OsString::from("--background-only"));
+    }
+    args
+}
+
+#[cfg(all(target_os = "macos", feature = "private-send"))]
+fn send_child_error_detail(status: impl std::fmt::Display, stdout: &[u8], stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+
+    let stdout = String::from_utf8_lossy(stdout);
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(stdout) {
+            if let Some(cause) = value
+                .pointer("/error/cause")
+                .and_then(|value| value.as_str())
+            {
+                return cause.to_string();
+            }
+            if let Some(message) = value
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+            {
+                return message.to_string();
+            }
+        }
+        return stdout.to_string();
+    }
+
+    format!("katok send failed with {status}")
+}
+
+#[cfg(not(all(target_os = "macos", feature = "private-send")))]
+fn send_reply_to_chat(
+    _chat_id: &str,
+    _body: &str,
+    _no_open: bool,
+    _data_dir: &Path,
+) -> Result<usize> {
+    anyhow::bail!("watch --reply requires the macOS private-send feature")
+}
+
+fn sync_watch_messages(
+    messages: &[RawMessage],
+    read_source: u128,
+    source: &str,
+    config: &KatokConfig,
+    archive_path: &Path,
+    data_dir: &Path,
+) -> Result<SyncReport> {
+    let archive = Archive::open(archive_path).context("open archive")?;
+    let mut report = archive.in_transaction(|| {
+        let upsert_started = Instant::now();
+        let mut report = archive.sync_messages(messages).context("sync messages")?;
+        let upsert_messages = upsert_started.elapsed().as_millis();
+
+        let rebuild_started = Instant::now();
+        let settings = ChunkSettings {
+            group_gap_seconds: config.chunk_gap_group_seconds,
+            direct_gap_seconds: config.chunk_gap_direct_seconds,
+        };
+        let stored_settings = archive
+            .stored_chunk_settings()
+            .context("read chunk settings")?;
+        let settings_changed = stored_settings
+            != Some((
+                settings.group_gap_seconds,
+                settings.direct_gap_seconds,
+                CHUNKER_VERSION,
+            ));
+        report.chunks = if archive.chunk_count().context("count chunks")? == 0 || settings_changed {
+            rebuild_chunks_with_settings(&archive, settings).context("rebuild chunks")?
+        } else {
+            rebuild_chunks_for_chats(&archive, settings, &report.touched_chats)
+                .context("rebuild chunks")?
+        };
+        archive
+            .record_chunk_settings(
+                settings.group_gap_seconds,
+                settings.direct_gap_seconds,
+                CHUNKER_VERSION,
+            )
+            .context("record chunk settings")?;
+
+        report.timings_ms = SyncTimings {
+            read_source,
+            upsert_messages,
+            rebuild_chunks: rebuild_started.elapsed().as_millis(),
+        };
+        Ok::<_, anyhow::Error>(report)
+    })?;
+    report.include_touched = false;
+    freshness::record_sync(data_dir, source, report.total_messages, report.chunks)?;
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -167,6 +891,7 @@ fn run_send(
     limit: usize,
     dry_run: bool,
     no_open: bool,
+    background_only: bool,
     draft: bool,
     take_focus_now: bool,
     focus_wait: u64,
@@ -265,11 +990,18 @@ fn run_send(
     } else {
         "카톡 보내는 중"
     };
+    if background_only {
+        let body = body_owned.expect("text body prepared for background-only send");
+        let ctx = ax_send::SendContext::background_only(policy);
+        ax_send::send_to_open_window(&target_owned, &body, false, &ctx)?;
+        return print_payload(
+            json,
+            &serde_json::json!({ "sent": true, "room": room_display }),
+        );
+    }
+
     let outcome = katok::kakao::send_curtain::run_with_curtain(curtain_title, move |curtain| {
-        let ctx = ax_send::SendContext {
-            policy,
-            curtain: Some(curtain),
-        };
+        let ctx = ax_send::SendContext::with_curtain(policy, curtain);
         if dry_run {
             return ax_send::resolve_room_window(&target_owned, allow_open, &ctx);
         }
@@ -366,6 +1098,85 @@ fn run_doctor(
         }
     });
     print_payload(json, &payload)
+}
+
+#[cfg(all(test, target_os = "macos", feature = "private-send"))]
+mod tests {
+    use super::{remaining_poll_delay, reply_send_args, send_child_error_detail};
+    use std::ffi::OsStr;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn poll_delay_preserves_start_to_start_interval_and_saturates_on_overrun() {
+        let poll_started = Instant::now();
+        let deadline = poll_started + Duration::from_secs(2);
+        assert_eq!(
+            remaining_poll_delay(deadline, poll_started + Duration::from_millis(750)),
+            Duration::from_millis(1_250)
+        );
+        assert_eq!(
+            remaining_poll_delay(deadline, poll_started + Duration::from_millis(2_500)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn send_child_error_detail_prefers_stderr() {
+        let detail = send_child_error_detail(
+            "exit status: 1",
+            br#"{"ok":false,"error":{"message":"stdout message","cause":"stdout cause"}}"#,
+            b"stderr cause\n",
+        );
+
+        assert_eq!(detail, "stderr cause");
+    }
+
+    #[test]
+    fn send_child_error_detail_reads_json_stdout_cause() {
+        let detail = send_child_error_detail(
+            "exit status: 1",
+            br#"{
+              "ok": false,
+              "error": {
+                "message": "command failed",
+                "cause": "no chat chat-group-1 in the archive; run sync first"
+              }
+            }"#,
+            b"",
+        );
+
+        assert_eq!(
+            detail,
+            "no chat chat-group-1 in the archive; run sync first"
+        );
+    }
+
+    #[test]
+    fn send_child_error_detail_falls_back_to_status() {
+        let detail = send_child_error_detail("exit status: 1", b"", b"");
+
+        assert_eq!(detail, "katok send failed with exit status: 1");
+    }
+
+    #[test]
+    fn reply_send_args_makes_no_open_replies_strictly_background_only() {
+        let default_args = reply_send_args("chat-group-1", false, Path::new("/tmp/katok-data"));
+        let no_open_args = reply_send_args("chat-group-1", true, Path::new("/tmp/katok-data"));
+
+        assert!(!default_args
+            .iter()
+            .any(|arg| arg.as_os_str() == OsStr::new("--no-open")));
+        assert!(!default_args
+            .iter()
+            .any(|arg| arg.as_os_str() == OsStr::new("--background-only")));
+        assert!(no_open_args
+            .iter()
+            .any(|arg| arg.as_os_str() == OsStr::new("--no-open")));
+        assert!(no_open_args
+            .iter()
+            .any(|arg| arg.as_os_str() == OsStr::new("--background-only")));
+    }
 }
 
 fn macos_probe_payload(enabled: bool, data_dir: &Path) -> serde_json::Value {

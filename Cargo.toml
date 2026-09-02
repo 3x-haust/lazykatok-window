@@ -39,6 +39,7 @@ base64 = "0.22"
 cbc = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
 dirs = "6"
 fastembed = { version = "5.16.1", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries-native-tls"] }
 hmac = "0.12"
@@ -53,6 +54,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 toml = "0.8"
 unicode-normalization = "0.1.25"
+unicode-width = "0.2"
 ureq = "3.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]

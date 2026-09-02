@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -103,6 +103,68 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Follow the source and emit message/state changes.
+    ///
+    /// The first poll establishes a baseline by default, so starting watch does
+    /// not dump an existing private archive. Use `--replay-existing` when a
+    /// consumer intentionally wants the current visible tail too. `--select`
+    /// is the human-view exception: it shows the selected chat's recent tail.
+    Watch {
+        #[arg(
+            long,
+            value_name = "SOURCE",
+            help = "Source adapter: macos, kakaocli, or fixture. Defaults to config"
+        )]
+        source: Option<String>,
+        #[arg(
+            value_name = "PATH",
+            help = "Fixture JSONL path when --source fixture is used"
+        )]
+        path: Option<PathBuf>,
+        /// Filter displayed/emitted message events to one chat_id. Archive sync still sees all chats.
+        #[arg(long, conflicts_with = "select")]
+        chat: Option<String>,
+        /// List chats, choose one, then show its recent tail and new messages.
+        ///
+        /// The prompt stays in the foreground terminal and never sends, opens,
+        /// or modifies a KakaoTalk room.
+        #[arg(long)]
+        select: bool,
+        /// Output format. Defaults to text with --select and jsonl otherwise.
+        #[arg(long, value_enum)]
+        format: Option<WatchOutputFormat>,
+        /// Recent messages to show at startup for a human-readable selected/chat view.
+        #[arg(long, default_value_t = 50, value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..=1_000))]
+        tail: u64,
+        /// Type a message and press Enter to send it to the selected chat.
+        ///
+        /// `/send ...` remains an alias. Requires interactive terminal input,
+        /// text output, a selected or explicit chat, and `--accept-use-policy`.
+        #[arg(long)]
+        reply: bool,
+        /// Reply only through the non-activating path to a chat that is already open.
+        ///
+        /// Never open, activate, or raise KakaoTalk, show a curtain, take focus, or use a global
+        /// key fallback. If background acceptance is not confirmed, report it as unconfirmed and
+        /// stop without any visible fallback.
+        #[arg(long, requires = "reply")]
+        reply_no_open: bool,
+        /// Confirm that replies may use the existing `katok send` Accessibility path.
+        #[arg(long)]
+        accept_use_policy: bool,
+        /// Poll interval in milliseconds.
+        #[arg(long, default_value_t = 2_000, value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(250..=60_000))]
+        poll_ms: u64,
+        /// Poll once, write the archive, and exit.
+        #[arg(long)]
+        once: bool,
+        /// Stop after this many polls. Useful for supervised runs and tests.
+        #[arg(long, value_parser = clap::builder::RangedU64ValueParser::<u64>::new().range(1..=100_000))]
+        max_polls: Option<u64>,
+        /// Emit the current snapshot on the first poll instead of only future changes.
+        #[arg(long)]
+        replay_existing: bool,
+    },
     /// Send, stage, or inspect a KakaoTalk chat through its macOS UI.
     ///
     /// Unlike every other subcommand this writes rather than reads, and it does so by driving
@@ -146,10 +208,30 @@ pub(crate) enum Commands {
         /// Resolve (and open) the room window but do not send. For verifying targeting safely.
         #[arg(long)]
         dry_run: bool,
-        /// Fail instead of opening the room when its window is closed. Use for automation that
-        /// must never touch the screen: opening a room briefly moves KakaoTalk's own windows.
+        /// Fail instead of opening the room when its window is closed.
+        ///
+        /// A text send may still use its protected visible fallback. Add `--background-only` to
+        /// forbid every activation, raise, curtain, focus-taking, and global-key fallback too.
         #[arg(long)]
         no_open: bool,
+        /// Use only the non-activating Accessibility path to an already-open text chat.
+        ///
+        /// If the background Enter is not confirmed, report it as unconfirmed and stop without a
+        /// curtain, activation/raise, room opening, or global fallback key. Also refuses a
+        /// non-empty compose box and verifies the intended text immediately before Enter.
+        #[arg(
+            long,
+            requires = "no_open",
+            conflicts_with_all = [
+                "image",
+                "draft",
+                "dry_run",
+                "take_focus_now",
+                "list_windows",
+                "list_rooms"
+            ]
+        )]
+        background_only: bool,
         /// Leave the message in the compose box for review instead of sending it.
         ///
         /// Pasted rather than typed, so nothing is delivered until a person presses Enter.
@@ -174,6 +256,12 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum WatchOutputFormat {
+    Jsonl,
+    Text,
 }
 
 #[derive(Subcommand)]

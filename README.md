@@ -255,6 +255,117 @@ katok sync --source fixture tests/fixtures/kakao/replies.jsonl --json
 
 합성 데이터로 실행할 때는 `--data-dir <임시경로>` 플래그로 반드시 격리하세요. `KATOK_DATA_DIR` 환경변수는 없습니다. 설정해도 조용히 무시되고 실제 아카이브에 기록됩니다.
 
+## 실시간에 가까운 터미널 스트림
+
+`katok watch`는 설정된 source adapter를 짧은 간격으로 다시 읽고, katok의 로컬
+아카이브와 chunk를 증분 갱신하면서 한 줄에 하나씩 JSONL event를 출력합니다.
+첫 poll은 기본적으로 기준점만 잡고 기존 메시지 본문을 출력하지 않습니다.
+예외적으로 `--select`는 사람이 직접 보는 모드라서 선택한 방의 최근 `--tail`
+메시지를 먼저 보여줍니다.
+
+```bash
+katok watch --source macos --select --poll-ms 1000
+katok watch --source macos --select --reply --accept-use-policy --poll-ms 1000
+katok watch --source macos --select --reply --reply-no-open --accept-use-policy --poll-ms 1000
+katok watch --source macos --chat <chat-id> --format text --poll-ms 1000
+katok watch --source macos --poll-ms 2000
+katok watch --source macos --chat <chat-id> --poll-ms 1000
+katok watch --source fixture tests/fixtures/kakao/replies.jsonl --once --replay-existing
+```
+
+사람이 터미널에서 직접 볼 때는 `--select`를 쓰십시오. 방 목록이 뜨면 번호나
+`chat_id`를 입력하고, 선택한 방만 `[시간] 방 / 보낸 사람: 내용` 형식으로 표시합니다.
+`--select`는 기본 출력이 `text`입니다. 기계가 읽을 stream이 필요할 때만
+`--format jsonl`을 쓰면 됩니다. `--tail <N>`은 선택 직후 처음 보여줄 최근 메시지
+개수이며 기본값은 50개입니다. poll 완료 로그의 `observed`는 source 전체에서 읽은
+메시지 수이고, `displayed`는 그중 선택한 방에서 실제로 화면에 보여준 수입니다.
+
+같은 터미널에서 답장하려면 `--reply --accept-use-policy`를 같이 붙입니다. 화면 위쪽은
+대화 기록, 구분선 아래 마지막 줄은 고정된 `reply> ` 입력란으로 나뉩니다. 새 메시지가
+도착해 위쪽 기록이 다시 그려져도 작성 중인 입력은 그대로 유지됩니다. 이때도 watch가
+자동으로 보내지는 않습니다. 입력란에 사용자가 직접 메시지 한 줄을 입력하고 Enter를
+누른 경우에만 현재 선택한 방으로 기존 `katok send`
+경로를 한 번 실행합니다. 기존 `/send 메시지` 형식도 같은 동작의 별칭으로
+계속 사용할 수 있습니다. 빈 줄은 무시하고, `/help`는 입력 명령을 보여주며,
+`/quit`은 watch를 종료합니다. 알 수 없는 `/...` 명령은 메시지로 잘못 보내지
+않습니다. `/`로 시작하는 문자를 보내려면 `/send /...`를 사용하십시오.
+`--reply`는 interactive terminal에서만 작동하며 pipe나 redirect로 들어온 줄은
+보내지 않습니다. 실제 전송에는 아래 `katok send`와 같은 macOS Accessibility
+권한과 실행 중인 KakaoTalk 앱이 필요하고, 성공·실패 상태는 위쪽 기록에 표시됩니다.
+`--reply-no-open`을 추가하면 대상 채팅방 창이 이미 열려 있을 때의 비활성
+Accessibility 전송만 허용합니다. 방 열기뿐 아니라 KakaoTalk 활성화/raise, focus를
+가져오는 fallback, 전체 화면 curtain, global Enter도 모두 금지됩니다. 비활성 Enter가
+수락되었다고 확인되지 않으면 `unconfirmed` 실패로 표시하고 화면에 보이는 fallback은
+실행하지 않습니다. 이때 문장이 비활성 입력칸에 남거나 이미 수락됐는지까지는 판별하지
+못합니다.
+`watch`는 이 `unconfirmed` 결과를 자동 재시도하지 않습니다. 첫 시도가 실제로 수락됐지만
+비움만 관측하지 못한 경우 사용자가 직접 다시 입력해 보내면 중복 전송될 수 있으므로,
+채팅방을 확인한 뒤 수동으로 재시도하십시오.
+
+예를 들면:
+
+```text
+Choose a chat to watch:
+  1. Friends (group, 123456)
+chat number or chat_id> 1
+[2026-09-02 12:00:00 UTC] Friends / 민지: 지금 가능?
+reply> 5분 뒤에 볼게요
+katok: sent reply (9 chars)
+reply>
+```
+
+event 종류:
+
+- `{"type":"state","schema_version":1,"state":"started",...}`: stream 시작.
+- `{"type":"state","schema_version":1,"state":"reading",...}`: source adapter 읽기 시작.
+- `{"type":"message","schema_version":1,"change":"inserted"|"updated"|"existing","message":{...}}`:
+  새 메시지, 수정된 메시지, 또는 `--replay-existing`으로 의도적으로 재생한 현재 snapshot.
+- `{"type":"state","schema_version":1,"state":"synced"|"idle",...}`: poll 완료와 archive/chunk 상태.
+
+각 poll은 `reading` state, `message` event 0개 이상, poll 완료 `state` 순서로 출력합니다.
+`observed_messages`와 `observed_chats`는 해당 poll에서 source adapter가 본 전체
+snapshot 기준이며 poll 완료 `state`에서 의미가 있습니다. `--chat`은 message event
+출력만 제한하며, archive sync와 다음 diff 기준점은 전체 source를 계속 봅니다.
+첫 poll은 아카이브를 반드시 sync합니다. 이후 poll의 전체 source fingerprint가
+바뀌지 않았다면 동일한 메시지 전체를 다시 upsert하고 chunk를 확인하는 작업은
+건너뜁니다. 표시하지 않는 다른 방의 변경도 전체 fingerprint에 포함되므로
+아카이브 sync를 실행합니다.
+
+macOS source에서 `katok doctor --macos-probe --json`의 `auth_cached`가 `false`이면
+첫 실행 때 KakaoTalk user id 복구 스캔 때문에 `reading` 상태가 오래 지속될 수
+있습니다. 한 번 성공하면 katok cache에 저장되어 다음 실행부터 짧아집니다. user id를
+이미 알고 있다면 `KATOK_KAKAO_USER_ID=<id> katok watch --source macos ...`처럼 직접
+전달해 이 복구 스캔을 건너뛸 수 있습니다.
+
+source 읽기, archive 쓰기, 설정 오류가 나면 별도 error event를 만들지 않고 stderr에
+원인을 출력한 뒤 non-zero로 종료합니다. source snapshot에서 사라진 메시지는
+삭제 event로 내보내지 않습니다. 이후 같은 `(account_hash, chat_id, message_id)`가
+다시 보이면 새 삽입처럼 처리됩니다.
+
+제한:
+
+- KakaoTalk 로컬 DB는 read-only로 열고, 쓰기는 katok의 로컬 아카이브에만 합니다.
+- `watch`와 `watch --select` 자체는 KakaoTalk UI를 조작하지 않으므로 방을 열거나 읽음 상태를 바꾸지 않습니다.
+  단, katok 아카이브는 로컬에 남으므로 원본 앱에서 사라진 메시지를 그대로 보관할 수
+  있습니다.
+- 사람용 출력도 터미널 scrollback이나 사용자가 직접 저장한 로그에는 남을 수 있습니다.
+  디버깅할 때 실제 메시지 본문을 붙여넣지 마십시오.
+- `watch` 출력은 local stdout의 text 또는 JSONL입니다. webhook, cloud sync, login item,
+  launch agent 같은 원격 전송이나 detached·숨은·상주 monitoring은 만들지 않습니다.
+- `--poll-ms`는 250ms부터 60s까지로 제한합니다. 더 즉각적인 알림이 필요해도
+  KakaoTalk 앱이나 로컬 DB에 부담을 주는 공격적인 polling은 피하세요.
+- `watch --reply`는 반복 전송 기능이 아닙니다. 사람이 foreground prompt에
+  메시지 한 줄을 직접 입력하고 Enter로 확인하며 `--accept-use-policy`를 붙인
+  경우에만 공식 macOS 앱 UI 경로를 한 번 사용합니다. 더 조심스럽게
+  확인하려면 아래의 `katok send --dry-run`을 먼저 쓰세요. stdin이 terminal이
+  아니면 시작 전에 거절하므로 pipe, redirect, unattended input으로는 답장할 수 없습니다.
+- `watch --reply --reply-no-open`은 내부적으로 `katok send --no-open --background-only`를
+  사용합니다. 이미 열린 고정 대상에 대한 비활성 Accessibility 시도만 허용하고,
+  확인 실패 시 curtain, 앱 활성화/raise, 방 열기, global-key fallback 전에 닫힌 채로
+  실패합니다.
+- 이미지와 파일 메시지는 텍스트가 없는 경우 stream의 메시지 event로 나오지 않을
+  수 있습니다.
+
 ## 메시지 전송
 
 전송은 되돌릴 수 없고 다른 사람에게 도달할 수 있습니다. 먼저 대상 방만
@@ -271,9 +382,21 @@ katok send --room "정확한 방 이름" --dry-run --json
 
 ```bash
 katok send --chat <chat-id> --text "확인한 메시지" --accept-use-policy --json
+katok send --chat <chat-id> --text "확인한 메시지" --no-open --background-only --accept-use-policy --json
 katok send --chat <chat-id> --image ./photo.jpg --accept-use-policy --json
 katok send --chat <chat-id> --text "검토할 초안" --draft --accept-use-policy --json
 ```
+
+`--background-only`는 `--no-open`이 필요하며 텍스트 전송 전용입니다. 이미 열린 대상
+창의 compose box에 접근해 PID 대상으로 Enter를 보내는 비활성 Accessibility 경로만
+실행합니다. 기존 compose text가 있거나 비어 있다고 확인할 수 없으면 덮어쓰기 전에
+거절하며, 입력한 text가 그대로 있는지 다시 확인한 뒤에만 Enter를 한 번 보냅니다.
+KakaoTalk가 수락했다고 compose box 비움으로 확인되지 않으면 메시지를
+보냈다고 보고하지 않고, curtain 생성이나 앱 활성화/raise 같은 가시적 fallback을
+호출하지 않습니다. 이 플래그가 없는 standalone `katok send`는 기존의 보호된 visible
+fallback 동작을 유지합니다.
+`background-only`의 `unconfirmed` 결과는 자동 재시도되지 않습니다. 첫 시도의 수락을
+관측하지 못했을 뿐일 수 있으므로 수동 재시도 전에는 대상 채팅을 직접 확인하십시오.
 
 `--accept-use-policy`는 법률 준수나 카카오의 승인을 보증하지 않습니다. 불법
 스팸, 사칭·계정 도용, 신고·차단·거부 이후의 연락, 스토킹·괴롭힘, 반복·대량·
@@ -298,6 +421,7 @@ katok doctor --json
 katok source chats --source macos --json
 katok sync --source macos --json
 katok sync --json
+katok watch --source macos --poll-ms 2000
 katok index --json
 katok search keyword "보고서" --json
 katok search bm25 "보고서" --json

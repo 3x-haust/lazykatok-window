@@ -9,6 +9,7 @@ pub mod search;
 pub mod semantic;
 pub mod transcript;
 pub mod types;
+pub mod watch;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

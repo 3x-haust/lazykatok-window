@@ -6,6 +6,14 @@ fn fixture_path(name: &str) -> String {
     format!("{}/tests/fixtures/kakao/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
+fn parse_jsonl(bytes: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("parse jsonl line"))
+        .collect()
+}
+
 #[test]
 fn cli_help_identifies_katok_when_invoked() {
     let mut cmd = Command::cargo_bin("katok").expect("katok binary");
@@ -30,7 +38,28 @@ fn cli_default_build_exposes_send_with_policy_flag() {
         .args(["send", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--accept-use-policy"));
+        .stdout(predicate::str::contains("--accept-use-policy"))
+        .stdout(predicate::str::contains("--background-only"))
+        .stdout(predicate::str::contains("non-activating Accessibility"));
+}
+
+#[test]
+fn cli_background_only_requires_no_open_before_ui_access() {
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "send",
+            "--room",
+            "Synthetic QA Room",
+            "--background-only",
+            "--accept-use-policy",
+        ])
+        .write_stdin("synthetic text")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--no-open"))
+        .stderr(predicate::str::contains("Accessibility permission").not())
+        .stderr(predicate::str::contains("KakaoTalk is not running").not());
 }
 
 #[test]
@@ -143,6 +172,61 @@ fn cli_indexes_and_searches_fixture_when_using_data_dir() {
         .assert()
         .success()
         .stdout(predicate::str::contains("parent_chunk_ids"));
+}
+
+#[test]
+fn cli_watch_once_replays_fixture_as_jsonl_and_updates_archive() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let data_dir = dir.path();
+    let fixture = fixture_path("replies.jsonl");
+
+    let output = Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            &fixture,
+            "--once",
+            "--replay-existing",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let stdout = String::from_utf8(output).expect("utf8 stdout");
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines.len(),
+        6,
+        "started + reading + 3 messages + synced:\n{stdout}"
+    );
+    let values = parse_jsonl(stdout.as_bytes());
+
+    assert_eq!(values[0]["type"], "state");
+    assert_eq!(values[0]["schema_version"], 1);
+    assert_eq!(values[0]["state"], "started");
+    assert_eq!(values[0]["observed_messages"], 0);
+    assert_eq!(values[0]["observed_chats"], 0);
+    assert_eq!(values[1]["type"], "state");
+    assert_eq!(values[1]["schema_version"], 1);
+    assert_eq!(values[1]["state"], "reading");
+    assert_eq!(values[2]["type"], "message");
+    assert_eq!(values[2]["schema_version"], 1);
+    assert_eq!(values[2]["change"], "existing");
+    assert_eq!(values[2]["message"]["message_id"], "m1");
+    assert_eq!(values[5]["state"], "synced");
+    assert_eq!(values[5]["schema_version"], 1);
+    assert_eq!(values[5]["observed_messages"], 3);
+    assert_eq!(values[5]["observed_chats"], 1);
+    assert_eq!(values[5]["archived_messages"], 3);
+
+    let archive = Archive::open(&data_dir.join("archive.sqlite3")).expect("open archive");
+    assert_eq!(archive.message_count().expect("message count"), 3);
 }
 
 #[test]
@@ -629,6 +713,244 @@ fn cli_sync_json_exposes_touched_chats_only_with_flag() {
         serde_json::json!([]),
         "quiet re-sync must still expose touched_chats when flagged"
     );
+}
+
+#[test]
+fn cli_watch_once_establishes_quiet_baseline_and_syncs_archive() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let fixture = fixture_path("replies.jsonl");
+
+    let output = Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            data_dir.to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            &fixture,
+            "--once",
+        ])
+        .output()
+        .expect("run watch once");
+    assert!(
+        output.status.success(),
+        "watch failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lines = parse_jsonl(&output.stdout);
+    assert_eq!(lines.len(), 3, "quiet startup emits state only: {lines:?}");
+    assert_eq!(lines[0]["type"], "state");
+    assert_eq!(lines[0]["schema_version"], 1);
+    assert_eq!(lines[0]["state"], "started");
+    assert_eq!(lines[1]["type"], "state");
+    assert_eq!(lines[1]["state"], "reading");
+    assert_eq!(lines[2]["type"], "state");
+    assert_eq!(lines[2]["state"], "synced");
+    assert_eq!(lines[2]["emitted_messages"].as_u64(), Some(0));
+    assert_eq!(lines[2]["observed_chats"].as_u64(), Some(1));
+    assert!(lines[2]["archived_messages"].as_u64().unwrap_or(0) > 0);
+
+    let archive = Archive::open(&data_dir.join("archive.sqlite3")).expect("open archive");
+    assert!(
+        archive.message_count().expect("count messages") > 0,
+        "watch should sync the local katok archive"
+    );
+}
+
+#[test]
+fn cli_watch_replay_existing_emits_message_events_as_jsonl() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = fixture_path("replies.jsonl");
+
+    let output = Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            dir.path().to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            &fixture,
+            "--once",
+            "--replay-existing",
+        ])
+        .output()
+        .expect("run watch replay");
+    assert!(
+        output.status.success(),
+        "watch replay failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lines = parse_jsonl(&output.stdout);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["type"] == "message" && line["change"] == "existing"),
+        "replay should include existing message events: {lines:?}"
+    );
+    let final_state = lines.last().expect("final state");
+    assert_eq!(final_state["type"], "state");
+    assert_eq!(final_state["schema_version"], 1);
+    assert_eq!(final_state["state"], "synced");
+    let message_events = lines
+        .iter()
+        .filter(|line| line["type"] == "message")
+        .count() as u64;
+    assert_eq!(
+        final_state["emitted_messages"].as_u64(),
+        Some(message_events)
+    );
+}
+
+#[test]
+fn cli_watch_text_format_prints_readable_chat_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = fixture_path("replies.jsonl");
+
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            dir.path().to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            &fixture,
+            "--chat",
+            "chat-group-1",
+            "--format",
+            "text",
+            "--once",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[2026-01-01 09:00:00 UTC] Synthetic Team / 민지: 보고서 초안 올렸어요",
+        ))
+        .stdout(predicate::str::contains("\"type\"").not())
+        .stderr(predicate::str::contains("katok: watching Synthetic Team"));
+}
+
+#[test]
+fn cli_watch_select_defaults_to_text_and_tails_the_selected_chat() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = fixture_path("replies.jsonl");
+
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            dir.path().to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            &fixture,
+            "--select",
+            "--once",
+            "--tail",
+            "1",
+        ])
+        .write_stdin("1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Synthetic Team / 준호"))
+        .stdout(predicate::str::contains("보고서 초안").not())
+        .stdout(predicate::str::contains("\"type\"").not())
+        .stderr(predicate::str::contains("Choose a chat to watch:"))
+        .stderr(predicate::str::contains("chat-group-1"));
+}
+
+#[test]
+fn cli_watch_reply_requires_policy_acceptance_before_reading_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            dir.path().to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            "--chat",
+            "chat-group-1",
+            "--reply",
+            "--once",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "refusing to continue without --accept-use-policy",
+        ))
+        .stderr(predicate::str::contains("fixture source requires").not());
+}
+
+#[test]
+fn cli_watch_reply_rejects_piped_or_redirected_input() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fixture = fixture_path("replies.jsonl");
+
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "--data-dir",
+            dir.path().to_str().expect("utf8 path"),
+            "watch",
+            "--source",
+            "fixture",
+            &fixture,
+            "--chat",
+            "chat-group-1",
+            "--reply",
+            "--accept-use-policy",
+            "--once",
+        ])
+        .write_stdin("ordinary line\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires an interactive terminal"))
+        .stderr(predicate::str::contains(
+            "piped or redirected input is not sent",
+        ))
+        .stderr(predicate::str::contains("reading source").not())
+        .stderr(predicate::str::contains("sent reply").not());
+}
+
+#[test]
+fn cli_watch_help_documents_human_reply_mode() {
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args(["watch", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--reply"))
+        .stdout(predicate::str::contains("--reply-no-open"))
+        .stdout(predicate::str::contains("already open"))
+        .stdout(predicate::str::contains("Type a message and press Enter"))
+        .stdout(predicate::str::contains("interactive terminal"))
+        .stdout(predicate::str::contains("--accept-use-policy"));
+}
+
+#[test]
+fn cli_watch_reply_no_open_requires_reply_mode() {
+    Command::cargo_bin("katok")
+        .expect("katok binary")
+        .args([
+            "watch",
+            "--source",
+            "fixture",
+            "--chat",
+            "chat-group-1",
+            "--reply-no-open",
+            "--once",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--reply"));
 }
 
 #[test]

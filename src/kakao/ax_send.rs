@@ -267,13 +267,21 @@ impl FocusPolicy {
 }
 
 /// Everything a send needs to know about how it may disturb the user.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SendContext {
     pub policy: FocusPolicy,
     /// Present when the caller set up a curtain, which is what makes taking the
     /// screen safe: input is blocked for the moment KakaoTalk is forward, and
     /// the block is visible so nobody types into it.
     pub curtain: Option<Arc<CurtainControl>>,
+    /// Whether a send may activate/raise KakaoTalk after its non-activating path fails.
+    allow_visible_ui: bool,
+}
+
+impl Default for SendContext {
+    fn default() -> Self {
+        Self::new(FocusPolicy::default())
+    }
 }
 
 impl SendContext {
@@ -281,6 +289,24 @@ impl SendContext {
         Self {
             policy,
             curtain: None,
+            allow_visible_ui: true,
+        }
+    }
+
+    /// A fail-closed context for text sends that must not cause any visible KakaoTalk transition.
+    pub fn background_only(policy: FocusPolicy) -> Self {
+        Self {
+            policy,
+            curtain: None,
+            allow_visible_ui: false,
+        }
+    }
+
+    pub fn with_curtain(policy: FocusPolicy, curtain: Arc<CurtainControl>) -> Self {
+        Self {
+            policy,
+            curtain: Some(curtain),
+            allow_visible_ui: true,
         }
     }
 
@@ -288,6 +314,42 @@ impl SendContext {
         self.curtain
             .as_ref()
             .is_some_and(|curtain| curtain.is_cancelled())
+    }
+
+    fn require_visible_fallback(&self) -> Result<(), SendError> {
+        if self.allow_visible_ui {
+            Ok(())
+        } else {
+            Err(SendError::BackgroundSendNotAccepted)
+        }
+    }
+
+    fn require_empty_background_compose(
+        &self,
+        room: &str,
+        value: Option<&str>,
+    ) -> Result<(), SendError> {
+        if self.allow_visible_ui {
+            return Ok(());
+        }
+        match value {
+            Some("") => Ok(()),
+            Some(_) => Err(SendError::BackgroundComposeNotEmpty(room.to_string())),
+            None => Err(SendError::BackgroundComposeUnreadable(room.to_string())),
+        }
+    }
+
+    fn require_intended_background_compose(
+        &self,
+        room: &str,
+        intended: &str,
+        value: Option<&str>,
+    ) -> Result<(), SendError> {
+        if self.allow_visible_ui || value == Some(intended) {
+            Ok(())
+        } else {
+            Err(SendError::BackgroundComposeChanged(room.to_string()))
+        }
     }
 }
 
@@ -313,6 +375,9 @@ impl Drop for ScreenHold {
 /// The hold is constructed *before* the raise is attempted so that a failed
 /// raise still takes the curtain down and gives focus back on the way out.
 fn take_screen(pid: i32, ctx: &SendContext, subtitle: &str) -> Result<ScreenHold, SendError> {
+    // Defense in depth: a background-only context can never cross the shared visible-UI gate,
+    // even if a future caller accidentally asks an image/draft/open-room path to use it.
+    ctx.require_visible_fallback()?;
     wait_for_user_idle(ctx.policy)?;
     if ctx.cancelled() {
         return Err(SendError::Cancelled);
@@ -511,10 +576,25 @@ pub enum SendError {
     ComposeBoxNotFound(String),
     #[error("failed to write the message into the input box (AXError {0})")]
     SetValueFailed(AXError),
+    #[error(
+        "strict background-only mode refused to overwrite the existing text in '{0}'s compose box"
+    )]
+    BackgroundComposeNotEmpty(String),
+    #[error(
+        "strict background-only mode could not verify that '{0}'s compose box was empty; nothing was written"
+    )]
+    BackgroundComposeUnreadable(String),
+    #[error("'{0}'s compose text changed before the non-activating Enter; Enter was not posted")]
+    BackgroundComposeChanged(String),
     #[error("could not create the Enter key event")]
     KeyEventFailed,
     #[error("message stayed in the input box; KakaoTalk did not accept Enter")]
     NotSent,
+    #[error(
+        "KakaoTalk did not confirm the non-activating Enter; strict background-only mode stopped \
+         without any visible fallback (the text may remain in the compose box)"
+    )]
+    BackgroundSendNotAccepted,
     #[error("could not find KakaoTalk's chat list; is the main window open?")]
     ChatListUnavailable,
     #[error("'{room}' is not in the chat list ({scanned} rooms checked). Check the exact name with --list-rooms")]
@@ -1735,6 +1815,13 @@ pub fn send_to_open_window(
     let compose = compose_box(window.as_raw())
         .ok_or_else(|| SendError::ComposeBoxNotFound(target.name.clone()))?;
 
+    // Strict mode must never replace a person's draft. This read sits immediately before the
+    // compose mutation; an unreadable value is not treated as empty.
+    ctx.require_empty_background_compose(
+        &target.name,
+        attr_string(compose.as_raw(), ATTR_VALUE).as_deref(),
+    )?;
+
     // Make the compose box the app's focused element before typing. Enter is delivered to
     // KakaoTalk as a whole, and KakaoTalk routes it to whatever it considers focused — with
     // several windows open that is often not this chat, and the message then sits in the box
@@ -1763,6 +1850,15 @@ pub fn send_to_open_window(
         return Err(SendError::SetValueFailed(err));
     }
 
+    // Do not post Enter on faith. Another actor or KakaoTalk itself may have changed the value
+    // after AXValue was set. Strict mode requires an exact last-moment match and never retries
+    // this send automatically when the check or later acceptance observation fails.
+    ctx.require_intended_background_compose(
+        &target.name,
+        text,
+        attr_string(compose.as_raw(), ATTR_VALUE).as_deref(),
+    )?;
+
     // KakaoTalk clears the compose box once it accepts the message; poll rather than sleep a
     // fixed amount so a fast machine is not penalised and a slow one is not called a failure.
     let accepted = |attempts: u32| {
@@ -1782,6 +1878,12 @@ pub fn send_to_open_window(
     if accepted(20) {
         return Ok(());
     }
+
+    // This check is the no-visible-UI boundary. It precedes take_screen, which is the first
+    // operation in this text path that can wait for focus, show the curtain, activate KakaoTalk,
+    // raise the room, or post a global key. A background-only caller therefore cannot reach any
+    // of those operations, including on the background Enter's failure path.
+    ctx.require_visible_fallback()?;
 
     // Enter posted to the pid is routed by KakaoTalk to its key window, and with several chats
     // open that is often not this one. Falling back costs the user's focus for a moment, which
@@ -1940,7 +2042,9 @@ pub fn open_window_titles() -> Result<Vec<String>, SendError> {
 
 #[cfg(test)]
 mod room_matching_tests {
-    use super::{room_matches, room_member_key, search_query_for};
+    use super::{
+        room_matches, room_member_key, search_query_for, FocusPolicy, SendContext, SendError,
+    };
 
     #[test]
     fn member_order_does_not_decide_identity() {
@@ -1977,5 +2081,76 @@ mod room_matching_tests {
     fn the_search_query_is_one_distinctive_member() {
         assert_eq!(search_query_for("Alpha, Beta"), "Alpha");
         assert_eq!(search_query_for("Synthetic Club"), "Synthetic Club");
+    }
+
+    #[test]
+    fn background_only_context_rejects_visible_send_fallback() {
+        let context = SendContext::background_only(FocusPolicy::immediate());
+        let error = context
+            .require_visible_fallback()
+            .expect_err("strict mode must stop before take_screen");
+
+        assert_eq!(
+            error.to_string(),
+            "KakaoTalk did not confirm the non-activating Enter; strict background-only mode \
+             stopped without any visible fallback (the text may remain in the compose box)"
+        );
+        assert!(context.curtain.is_none());
+    }
+
+    #[test]
+    fn normal_context_keeps_the_existing_visible_fallback() {
+        let context = SendContext::new(FocusPolicy::immediate());
+        assert!(context.require_visible_fallback().is_ok());
+    }
+
+    #[test]
+    fn background_only_requires_a_readable_empty_compose_before_writing() {
+        let context = SendContext::background_only(FocusPolicy::immediate());
+
+        assert!(context
+            .require_empty_background_compose("Synthetic Room", Some(""))
+            .is_ok());
+        assert!(matches!(
+            context.require_empty_background_compose("Synthetic Room", Some("existing draft")),
+            Err(SendError::BackgroundComposeNotEmpty(room)) if room == "Synthetic Room"
+        ));
+        assert!(matches!(
+            context.require_empty_background_compose("Synthetic Room", None),
+            Err(SendError::BackgroundComposeUnreadable(room)) if room == "Synthetic Room"
+        ));
+    }
+
+    #[test]
+    fn background_only_requires_exact_compose_text_before_enter() {
+        let context = SendContext::background_only(FocusPolicy::immediate());
+
+        assert!(context
+            .require_intended_background_compose("Synthetic Room", "intended", Some("intended"))
+            .is_ok());
+        assert!(matches!(
+            context.require_intended_background_compose(
+                "Synthetic Room",
+                "intended",
+                Some("changed")
+            ),
+            Err(SendError::BackgroundComposeChanged(room)) if room == "Synthetic Room"
+        ));
+        assert!(matches!(
+            context.require_intended_background_compose("Synthetic Room", "intended", None),
+            Err(SendError::BackgroundComposeChanged(room)) if room == "Synthetic Room"
+        ));
+    }
+
+    #[test]
+    fn normal_send_preserves_its_existing_compose_behavior() {
+        let context = SendContext::new(FocusPolicy::immediate());
+
+        assert!(context
+            .require_empty_background_compose("Synthetic Room", Some("existing draft"))
+            .is_ok());
+        assert!(context
+            .require_intended_background_compose("Synthetic Room", "intended", Some("changed"))
+            .is_ok());
     }
 }
