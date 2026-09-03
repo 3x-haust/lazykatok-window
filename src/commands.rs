@@ -9,7 +9,7 @@ use crossterm::{
         KeyModifiers,
     },
     execute, queue,
-    style::Print,
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use katok::{
@@ -26,7 +26,8 @@ use katok::{
     watch::WATCH_EVENT_SCHEMA_VERSION,
     watch::{
         chat_count, format_human_message_line, parse_reply_command, sanitize_terminal_text,
-        ReplyCommand, ReplyUiState, WatchEvent,
+        ChatEntry, ReplyCommand, ReplyRow, ReplyUiState, RowStyle, ScrollDelta, WatchEvent,
+        WatchMessageChange,
     },
     watch::{WatchSnapshot, WatchState},
 };
@@ -34,6 +35,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 #[cfg(all(target_os = "macos", feature = "private-send"))]
 use std::ffi::OsString;
@@ -50,6 +52,7 @@ mod source_adapter;
 #[derive(Debug, PartialEq, Eq)]
 enum ReplyTerminalAction {
     Submit(String),
+    Scroll(ScrollDelta),
     Quit,
 }
 
@@ -97,34 +100,89 @@ fn apply_reply_input_events(
                     batch.actions.push(ReplyTerminalAction::Quit);
                     break;
                 }
+                let mut edited = false;
                 match key.code {
                     KeyCode::Enter | KeyCode::Char('\r' | '\n') => {
                         batch
                             .actions
                             .push(ReplyTerminalAction::Submit(state.take_draft()));
-                        if batch.redraw == ReplyRedraw::None {
-                            batch.redraw = ReplyRedraw::Input;
-                        }
+                        edited = true;
                     }
                     KeyCode::Backspace => {
                         state.backspace();
-                        if batch.redraw == ReplyRedraw::None {
-                            batch.redraw = ReplyRedraw::Input;
-                        }
+                        edited = true;
+                    }
+                    KeyCode::Delete => {
+                        state.delete();
+                        edited = true;
+                    }
+                    KeyCode::Left => {
+                        state.left();
+                        edited = true;
+                    }
+                    KeyCode::Right => {
+                        state.right();
+                        edited = true;
+                    }
+                    KeyCode::Home => {
+                        state.home();
+                        edited = true;
+                    }
+                    KeyCode::End => {
+                        state.end();
+                        edited = true;
+                    }
+                    KeyCode::Up => batch
+                        .actions
+                        .push(ReplyTerminalAction::Scroll(ScrollDelta::Rows(-1))),
+                    KeyCode::Down => batch
+                        .actions
+                        .push(ReplyTerminalAction::Scroll(ScrollDelta::Rows(1))),
+                    KeyCode::PageUp => batch
+                        .actions
+                        .push(ReplyTerminalAction::Scroll(ScrollDelta::Pages(-1))),
+                    KeyCode::PageDown => batch
+                        .actions
+                        .push(ReplyTerminalAction::Scroll(ScrollDelta::Pages(1))),
+                    KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.home();
+                        edited = true;
+                    }
+                    KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.left();
+                        edited = true;
+                    }
+                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.end();
+                        edited = true;
+                    }
+                    KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.right();
+                        edited = true;
+                    }
+                    KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.ctrl_w();
+                        edited = true;
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.ctrl_u();
+                        edited = true;
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        state.ctrl_k();
+                        edited = true;
                     }
                     KeyCode::Char(character)
                         if !character.is_control()
                             && !key.modifiers.contains(KeyModifiers::CONTROL) =>
                     {
-                        // ALT, SHIFT, SUPER, and enhanced-keyboard state may accompany valid
-                        // text on macOS terminals and IMEs. Only Control changes a printable
-                        // character into a command here.
                         state.insert(character);
-                        if batch.redraw == ReplyRedraw::None {
-                            batch.redraw = ReplyRedraw::Input;
-                        }
+                        edited = true;
                     }
                     _ => {}
+                }
+                if edited && batch.redraw == ReplyRedraw::None {
+                    batch.redraw = ReplyRedraw::Input;
                 }
             }
             _ => {}
@@ -136,6 +194,11 @@ fn apply_reply_input_events(
 struct ReplyTerminal {
     output: io::Stdout,
     state: ReplyUiState,
+    previous_rows: Vec<(String, RowStyle)>,
+    full_invalidate: bool,
+    width: u16,
+    height: u16,
+    color_enabled: bool,
     active: bool,
 }
 
@@ -145,6 +208,11 @@ impl ReplyTerminal {
         let mut terminal = Self {
             output: io::stdout(),
             state: ReplyUiState::default(),
+            previous_rows: Vec::new(),
+            full_invalidate: true,
+            width: 0,
+            height: 0,
+            color_enabled: std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
             active: true,
         };
         execute!(
@@ -159,7 +227,17 @@ impl ReplyTerminal {
     }
 
     fn push_line(&mut self, line: impl Into<String>) -> Result<()> {
-        self.state.push_line(line);
+        self.state.push_system(line);
+        self.render()
+    }
+
+    fn push_chat(&mut self, entry: ChatEntry) -> Result<()> {
+        self.state.push_chat(entry);
+        self.render()
+    }
+
+    fn scroll(&mut self, delta: ScrollDelta) -> Result<()> {
+        self.state.scroll(delta, self.height);
         self.render()
     }
 
@@ -182,6 +260,9 @@ impl ReplyTerminal {
         }
 
         let batch = apply_reply_input_events(&mut self.state, events);
+        if batch.redraw == ReplyRedraw::Full {
+            self.full_invalidate = true;
+        }
         match batch.redraw {
             ReplyRedraw::None => {}
             ReplyRedraw::Input => self.render_input()?,
@@ -192,51 +273,169 @@ impl ReplyTerminal {
 
     fn render_input(&mut self) -> Result<()> {
         let (width, height) = terminal::size().context("read reply terminal size")?;
-        let frame = self.state.frame(width, height);
-        let input_row = height.saturating_sub(1);
+        if (width, height) != (self.width, self.height) {
+            self.full_invalidate = true;
+            return self.render();
+        }
+        let frame = self.state.input_frame(width);
+        let input_row = height.saturating_sub(2);
+        let cache_index = input_row as usize;
+        let changed = self
+            .previous_rows
+            .get(cache_index)
+            .is_none_or(|previous| previous.0 != frame.input);
+        queue!(self.output, Hide).context("hide reply cursor")?;
+        if changed {
+            queue!(
+                self.output,
+                MoveTo(0, input_row),
+                Clear(ClearType::CurrentLine),
+                Print(&frame.input)
+            )
+            .context("draw reply input")?;
+            if let Some(previous) = self.previous_rows.get_mut(cache_index) {
+                *previous = (frame.input.clone(), RowStyle::Plain);
+            }
+        }
         queue!(
             self.output,
-            Hide,
-            MoveTo(0, input_row),
-            Clear(ClearType::CurrentLine),
-            Print(&frame.input),
             MoveTo(frame.cursor_column.min(width.saturating_sub(1)), input_row),
             Show
         )
-        .context("draw reply input")?;
+        .context("position reply cursor")?;
         self.output.flush().context("flush reply terminal")?;
         Ok(())
     }
 
     fn render(&mut self) -> Result<()> {
         let (width, height) = terminal::size().context("read reply terminal size")?;
-        let frame = self.state.frame(width, height);
-        queue!(self.output, Hide, MoveTo(0, 0), Clear(ClearType::All))
-            .context("clear reply terminal")?;
-        for (row, line) in frame.conversation.iter().enumerate() {
-            let Ok(row) = u16::try_from(row) else {
-                break;
-            };
-            if row >= height.saturating_sub(2) {
-                break;
-            }
-            queue!(self.output, MoveTo(0, row), Print(line)).context("draw reply history")?;
+        if (width, height) != (self.width, self.height) {
+            self.full_invalidate = true;
+            self.width = width;
+            self.height = height;
         }
-        let separator_row = height.saturating_sub(2);
-        let input_row = height.saturating_sub(1);
+        let frame = self.state.frame(width, height);
+        let conversation_height = height.saturating_sub(3) as usize;
+        let mut rows = Vec::with_capacity(height as usize);
+        rows.extend(
+            frame
+                .conversation
+                .iter()
+                .cloned()
+                .chain(std::iter::repeat(ReplyRow {
+                    text: String::new(),
+                    style: RowStyle::Plain,
+                }))
+                .take(conversation_height),
+        );
+        rows.push(ReplyRow {
+            text: frame.separator,
+            style: RowStyle::Dim,
+        });
+        rows.push(ReplyRow {
+            text: frame.input,
+            style: RowStyle::Plain,
+        });
+        rows.push(ReplyRow {
+            text: frame.footer,
+            style: RowStyle::Dim,
+        });
+
+        queue!(self.output, Hide).context("hide reply cursor")?;
+        if self.full_invalidate {
+            queue!(self.output, MoveTo(0, 0), Clear(ClearType::All))
+                .context("clear reply terminal")?;
+        }
+        for (index, row) in rows.iter().enumerate() {
+            if self.full_invalidate || reply_row_changed(self.previous_rows.get(index), row) {
+                let terminal_row = u16::try_from(index).unwrap_or(u16::MAX);
+                queue!(
+                    self.output,
+                    MoveTo(0, terminal_row),
+                    Clear(ClearType::CurrentLine)
+                )
+                .context("clear changed reply row")?;
+                queue_styled_row(&mut self.output, row, self.color_enabled)
+                    .context("draw changed reply row")?;
+            }
+        }
+        for index in rows.len()..self.previous_rows.len() {
+            queue!(
+                self.output,
+                MoveTo(0, u16::try_from(index).unwrap_or(u16::MAX)),
+                Clear(ClearType::CurrentLine)
+            )
+            .context("clear stale reply row")?;
+        }
+        let input_row = height.saturating_sub(2);
         queue!(
             self.output,
-            MoveTo(0, separator_row),
-            Print(&frame.separator),
-            MoveTo(0, input_row),
-            Print(&frame.input),
             MoveTo(frame.cursor_column.min(width.saturating_sub(1)), input_row),
             Show
         )
-        .context("draw reply input")?;
+        .context("position reply cursor")?;
         self.output.flush().context("flush reply terminal")?;
+        self.previous_rows = rows.into_iter().map(|row| (row.text, row.style)).collect();
+        self.full_invalidate = false;
         Ok(())
     }
+}
+
+fn reply_row_changed(previous: Option<&(String, RowStyle)>, row: &ReplyRow) -> bool {
+    previous.is_none_or(|previous| previous.0 != row.text || previous.1 != row.style)
+}
+
+fn queue_styled_row(
+    output: &mut impl Write,
+    row: &ReplyRow,
+    color_enabled: bool,
+) -> io::Result<()> {
+    match row.style {
+        RowStyle::Plain => queue!(output, Print(&row.text))?,
+        RowStyle::Dim => {
+            queue!(
+                output,
+                SetAttribute(Attribute::Dim),
+                Print(&row.text),
+                SetAttribute(Attribute::Reset)
+            )?;
+        }
+        RowStyle::MessagePrefix { columns, palette } if color_enabled && columns > 0 => {
+            let split = display_column_byte_index(&row.text, columns as usize);
+            let (prefix, body) = row.text.split_at(split);
+            const PALETTE: [Color; 8] = [
+                Color::Blue,
+                Color::Cyan,
+                Color::Green,
+                Color::Yellow,
+                Color::Magenta,
+                Color::Red,
+                Color::DarkCyan,
+                Color::DarkGreen,
+            ];
+            queue!(
+                output,
+                SetForegroundColor(PALETTE[palette as usize % PALETTE.len()]),
+                Print(prefix),
+                ResetColor,
+                Print(body)
+            )?;
+        }
+        RowStyle::MessagePrefix { .. } => queue!(output, Print(&row.text))?,
+    }
+    Ok(())
+}
+
+fn display_column_byte_index(value: &str, columns: usize) -> usize {
+    let mut width = 0;
+    for (byte, character) in value.char_indices() {
+        let next = width + UnicodeWidthChar::width(character).unwrap_or(0);
+        if next > columns {
+            return byte;
+        }
+        width = next;
+    }
+    value.len()
 }
 
 impl Drop for ReplyTerminal {
@@ -594,7 +793,24 @@ fn run_watch(
                             change, message, ..
                         } = &event
                         {
-                            terminal.push_line(format_human_message_line(*change, message))?;
+                            let sender = if message.sender_nickname.trim().is_empty() {
+                                message.sender_id.clone()
+                            } else {
+                                message.sender_nickname.clone()
+                            };
+                            let mut text = if message.text.trim().is_empty() {
+                                format!("<{}>", message.message_type)
+                            } else {
+                                message.text.clone()
+                            };
+                            if *change == WatchMessageChange::Updated {
+                                text.push_str(" (updated)");
+                            }
+                            terminal.push_chat(ChatEntry {
+                                timestamp: message.timestamp,
+                                sender,
+                                text,
+                            })?;
                         }
                     } else {
                         print_text_event(&mut stdout, &event)?;
@@ -783,8 +999,13 @@ fn process_reply_action(
     no_open: bool,
     data_dir: &Path,
 ) -> Result<bool> {
-    let ReplyTerminalAction::Submit(line) = action else {
-        return Ok(true);
+    let line = match action {
+        ReplyTerminalAction::Quit => return Ok(true),
+        ReplyTerminalAction::Scroll(delta) => {
+            terminal.scroll(delta)?;
+            return Ok(false);
+        }
+        ReplyTerminalAction::Submit(line) => line,
     };
     match parse_reply_command(1, &line) {
         ReplyCommand::Send(body) => {
@@ -796,7 +1017,7 @@ fn process_reply_action(
         }
         ReplyCommand::Quit => return Ok(true),
         ReplyCommand::Help => terminal.push_line(
-            "katok: type a message and press Enter to send; commands: /send message, /help, /quit",
+            "katok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit",
         )?,
         ReplyCommand::Empty => {}
         ReplyCommand::Ignored => terminal.push_line("katok: not sent; unknown slash command")?,
@@ -1194,12 +1415,32 @@ fn run_doctor(
 
 #[cfg(test)]
 mod reply_terminal_tests {
-    use super::{apply_reply_input_events, ReplyRedraw, ReplyTerminalAction};
+    use super::{apply_reply_input_events, reply_row_changed, ReplyRedraw, ReplyTerminalAction};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use katok::watch::ReplyUiState;
+    use katok::watch::{ReplyRow, ReplyUiState, RowStyle, ScrollDelta};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    #[test]
+    fn row_diff_marks_only_changed_rows_after_the_initial_batch() {
+        let previous = [
+            ("history".to_string(), RowStyle::Dim),
+            ("reply> old".to_string(), RowStyle::Plain),
+        ];
+        let unchanged = ReplyRow {
+            text: "history".to_string(),
+            style: RowStyle::Dim,
+        };
+        let changed = ReplyRow {
+            text: "reply> new".to_string(),
+            style: RowStyle::Plain,
+        };
+
+        assert!(!reply_row_changed(Some(&previous[0]), &unchanged));
+        assert!(reply_row_changed(Some(&previous[1]), &changed));
+        assert!(reply_row_changed(None, &unchanged));
     }
 
     #[test]
@@ -1276,9 +1517,10 @@ mod reply_terminal_tests {
         assert_eq!(second.redraw, ReplyRedraw::Full);
         let frame = state.frame(40, 8);
         assert_eq!(frame.input, "reply> abc글");
+        assert_eq!(frame.conversation.len(), 1);
         assert_eq!(
-            frame.conversation,
-            ["[now] Synthetic Room / Tester: incoming"]
+            frame.conversation[0].text,
+            "[now] Synthetic Room / Tester: incoming"
         );
     }
 
@@ -1297,6 +1539,53 @@ mod reply_terminal_tests {
 
         assert_eq!(state.frame(80, 5).input, "reply> éA");
         assert_eq!(batch.actions, [ReplyTerminalAction::Quit]);
+    }
+
+    #[test]
+    fn movement_delete_kill_and_scroll_keys_apply_expected_actions() {
+        let mut state = ReplyUiState::default();
+        state.paste("one two");
+        let batch = apply_reply_input_events(
+            &mut state,
+            [
+                key(KeyCode::Left, KeyModifiers::NONE),
+                key(KeyCode::Char('b'), KeyModifiers::CONTROL),
+                key(KeyCode::Delete, KeyModifiers::NONE),
+                key(KeyCode::Char('w'), KeyModifiers::CONTROL),
+                key(KeyCode::Home, KeyModifiers::NONE),
+                key(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                key(KeyCode::Up, KeyModifiers::NONE),
+                key(KeyCode::PageDown, KeyModifiers::NONE),
+            ],
+        );
+
+        assert_eq!(state.draft(), "");
+        assert_eq!(batch.redraw, ReplyRedraw::Input);
+        assert_eq!(
+            batch.actions,
+            [
+                ReplyTerminalAction::Scroll(ScrollDelta::Rows(-1)),
+                ReplyTerminalAction::Scroll(ScrollDelta::Pages(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn control_a_b_e_f_match_home_left_end_right() {
+        let mut state = ReplyUiState::default();
+        state.paste("abc");
+        apply_reply_input_events(
+            &mut state,
+            [
+                key(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('f'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('b'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            ],
+        );
+        assert_eq!(state.draft(), "c");
+        assert_eq!(state.cursor(), 0);
     }
 
     #[test]

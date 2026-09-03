@@ -280,15 +280,31 @@ katok watch --source fixture tests/fixtures/kakao/replies.jsonl --once --replay-
 개수이며 기본값은 50개입니다. poll 완료 로그의 `observed`는 source 전체에서 읽은
 메시지 수이고, `displayed`는 그중 선택한 방에서 실제로 화면에 보여준 수입니다.
 
-같은 터미널에서 답장하려면 `--reply --accept-use-policy`를 같이 붙입니다. 화면 위쪽은
-대화 기록, 구분선 아래 마지막 줄은 고정된 `reply> ` 입력란으로 나뉩니다. 새 메시지가
-도착해 위쪽 기록이 다시 그려져도 작성 중인 입력은 그대로 유지됩니다. 이때도 watch가
-자동으로 보내지는 않습니다. 입력란에 사용자가 직접 메시지 한 줄을 입력하고 Enter를
-누른 경우에만 현재 선택한 방으로 기존 `katok send`
-경로를 한 번 실행합니다. 기존 `/send 메시지` 형식도 같은 동작의 별칭으로
-계속 사용할 수 있습니다. 빈 줄은 무시하고, `/help`는 입력 명령을 보여주며,
-`/quit`은 watch를 종료합니다. 알 수 없는 `/...` 명령은 메시지로 잘못 보내지
-않습니다. `/`로 시작하는 문자를 보내려면 `/send /...`를 사용하십시오.
+같은 터미널에서 답장하려면 `--reply --accept-use-policy`를 같이 붙입니다. 화면은
+스크롤 가능한 대화 기록, 구분선, 고정된 `reply> ` 입력란, 단축키 footer로 나뉩니다.
+메시지는 로컬 시각 `HH:MM`, 12칸 보낸 사람 열로 표시되고 같은 사람이 5분 안에 보낸
+연속 메시지는 `·`로 묶입니다. 날짜가 바뀌면 날짜 구분선이 나타납니다. 새 메시지가
+도착해도 작성 중인 입력과 cursor는 그대로 유지되며, 과거 기록을 보는 중이면 viewport를
+움직이지 않고 `N new messages` 표식을 보여줍니다. `NO_COLOR` 환경 변수가 비어 있지
+않으면 보낸 사람 색상을 출력하지 않습니다.
+
+| 키 | 동작 |
+|---|---|
+| `Enter` | 현재 초안을 한 번 전송 |
+| `Left` / `Right`, `Ctrl-B` / `Ctrl-F` | cursor를 한 글자 이동 |
+| `Home` / `End`, `Ctrl-A` / `Ctrl-E` | 입력 시작/끝으로 이동 |
+| `Backspace` / `Delete` | cursor 앞/뒤 글자 삭제 |
+| `Ctrl-W` / `Ctrl-U` / `Ctrl-K` | 앞 단어/입력 시작까지/입력 끝까지 삭제 |
+| `Up` / `Down` | 대화를 한 줄 스크롤 |
+| `PgUp` / `PgDn` | 대화를 한 페이지 스크롤 |
+| `Ctrl-C` / `Ctrl-D` | reply mode 종료 |
+
+watch가 자동으로 보내지는 않습니다. 입력란에 사용자가 직접 메시지 한 줄을 입력하고
+Enter를 누른 경우에만 현재 선택한 방으로 기존 `katok send` 경로를 한 번 실행합니다.
+기존 `/send 메시지` 형식도 같은 동작의 별칭으로 계속 사용할 수 있습니다. 빈 줄은
+무시하고, `/help`는 입력 명령을 보여주며, `/quit`은 watch를 종료합니다. 알 수 없는
+`/...` 명령은 메시지로 잘못 보내지 않습니다. `/`로 시작하는 문자를 보내려면
+`/send /...`를 사용하십시오.
 `--reply`는 interactive terminal에서만 작동하며 pipe나 redirect로 들어온 줄은
 보내지 않습니다. 실제 전송에는 아래 `katok send`와 같은 macOS Accessibility
 권한과 실행 중인 KakaoTalk 앱이 필요하고, 성공·실패 상태는 위쪽 기록에 표시됩니다.
@@ -306,12 +322,15 @@ Accessibility 전송만 허용합니다. 방 열기뿐 아니라 KakaoTalk 활�
 
 ```text
 Choose a chat to watch:
-  1. Friends (group, 123456)
+  1. 테스트방 (group, chat-synthetic-1)
 chat number or chat_id> 1
-[2026-09-02 12:00:00 UTC] Friends / 민지: 지금 가능?
-reply> 5분 뒤에 볼게요
-katok: sent reply (9 chars)
-reply>
+──────────────  2026-09-02  ──────────────
+12:00 Alice        지금 가능해요?
+12:03 ·            네, 확인했습니다.
+12:04 민준         5분 뒤에 볼게요.
+──────────────────────────────────────────
+reply> 답장 초안
+↑↓ scroll  PgUp/PgDn page  Enter send  Ctrl-C quit  /help
 ```
 
 event 종류:

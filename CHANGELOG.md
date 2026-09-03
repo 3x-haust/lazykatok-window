@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Reply TUI
+
+- Redesigned `watch --reply` with compact local timestamps, Unicode-width sender
+  columns, consecutive-message grouping, day separators, stable sender colors,
+  and a monochrome `NO_COLOR` mode.
+- Added cached visible-window layout, row-diff terminal updates, conversation
+  paging with an unread marker, and a cursor-aware single-line editor with
+  readline-style movement and deletion keys.
+
 ## 0.3.2 - 2026-08-12
 
 ### Release

@@ -1,7 +1,7 @@
 use crate::types::RawMessage;
-use chrono::SecondsFormat;
+use chrono::{DateTime, Local, SecondsFormat, Utc};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub const WATCH_EVENT_SCHEMA_VERSION: u8 = 1;
@@ -56,91 +56,497 @@ pub enum ReplyCommand {
 const REPLY_HISTORY_LIMIT: usize = 2_000;
 pub const REPLY_PROMPT: &str = "reply> ";
 
-/// Terminal-independent state for the interactive reply surface.
-///
-/// Keeping editing and layout separate from terminal I/O makes redraws deterministic and lets
-/// tests prove that incoming history cannot overwrite a partially typed draft.
-#[derive(Debug, Clone, Default)]
-pub struct ReplyUiState {
-    history: std::collections::VecDeque<String>,
-    draft: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatEntry {
+    pub timestamp: DateTime<Utc>,
+    pub sender: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplyFrame {
-    pub conversation: Vec<String>,
-    pub separator: String,
+pub enum HistoryEntry {
+    Chat(ChatEntry),
+    System(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowStyle {
+    Plain,
+    Dim,
+    MessagePrefix { columns: u16, palette: u8 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyRow {
+    pub text: String,
+    pub style: RowStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollDelta {
+    Rows(isize),
+    Pages(isize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyInputFrame {
     pub input: String,
     pub cursor_column: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyFrame {
+    pub conversation: Vec<ReplyRow>,
+    pub separator: String,
+    pub input: String,
+    pub cursor_column: u16,
+    pub footer: String,
+}
+
+#[derive(Debug, Clone)]
+struct WrappedEntry {
+    width: usize,
+    rows: Vec<ReplyRow>,
+}
+
+#[derive(Debug, Clone)]
+struct StoredEntry {
+    id: u64,
+    entry: HistoryEntry,
+    grouped: bool,
+    day_separator: Option<String>,
+    wrapped: Option<WrappedEntry>,
+}
+
+/// Terminal-independent state for the interactive reply surface.
+#[derive(Debug, Clone, Default)]
+pub struct ReplyUiState {
+    history: VecDeque<StoredEntry>,
+    draft: Vec<char>,
+    cursor: usize,
+    next_id: u64,
+    layout_width: Option<usize>,
+    cumulative_rows: Vec<usize>,
+    total_rows: usize,
+    scroll: Option<usize>,
+    new_since_scroll: usize,
+    wrap_computations: usize,
+}
+
 impl ReplyUiState {
+    pub fn push_chat(&mut self, mut chat: ChatEntry) {
+        chat.sender = sanitize_terminal_text(&chat.sender);
+        chat.text = sanitize_terminal_text(&chat.text);
+        let (grouped, day_separator) = self.chat_context(&chat);
+        self.push_entry(HistoryEntry::Chat(chat), grouped, day_separator, true);
+    }
+
+    pub fn push_system(&mut self, line: impl Into<String>) {
+        self.push_entry(
+            HistoryEntry::System(sanitize_terminal_text(&line.into())),
+            false,
+            None,
+            false,
+        );
+    }
+
+    /// Compatibility alias for status producers and the standalone benchmark.
     pub fn push_line(&mut self, line: impl Into<String>) {
-        if self.history.len() == REPLY_HISTORY_LIMIT {
-            self.history.pop_front();
+        self.push_system(line);
+    }
+
+    fn push_entry(
+        &mut self,
+        entry: HistoryEntry,
+        grouped: bool,
+        day_separator: Option<String>,
+        is_chat: bool,
+    ) {
+        if self.scroll.is_some() && is_chat {
+            self.new_since_scroll = self.new_since_scroll.saturating_add(1);
         }
-        self.history.push_back(sanitize_terminal_text(&line.into()));
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let mut stored = StoredEntry {
+            id,
+            entry,
+            grouped,
+            day_separator,
+            wrapped: None,
+        };
+        if self.history.len() < REPLY_HISTORY_LIMIT {
+            if let Some(width) = self.layout_width {
+                let wrapped = wrap_history_entry(&stored, width);
+                self.wrap_computations += 1;
+                self.total_rows += wrapped.rows.len();
+                self.cumulative_rows.push(self.total_rows);
+                stored.wrapped = Some(wrapped);
+            }
+            self.history.push_back(stored);
+            return;
+        }
+
+        let removed_rows = self
+            .history
+            .pop_front()
+            .and_then(|entry| entry.wrapped.map(|wrapped| wrapped.rows.len()))
+            .unwrap_or(0);
+        if let Some(top) = self.scroll.as_mut() {
+            *top = top.saturating_sub(removed_rows);
+        }
+        if let Some(first) = self.history.front_mut() {
+            if first.grouped || first.day_separator.is_some() {
+                first.grouped = false;
+                first.day_separator = None;
+                first.wrapped = None;
+            }
+        }
+        self.history.push_back(stored);
+        self.layout_width = None;
+    }
+
+    fn chat_context(&self, next: &ChatEntry) -> (bool, Option<String>) {
+        let Some(previous) = self.history.back() else {
+            return (false, None);
+        };
+        let HistoryEntry::Chat(previous) = &previous.entry else {
+            return (false, None);
+        };
+        let previous_local = previous.timestamp.with_timezone(&Local);
+        let next_local = next.timestamp.with_timezone(&Local);
+        let day_changed = previous_local.date_naive() != next_local.date_naive();
+        let gap = next.timestamp.signed_duration_since(previous.timestamp);
+        let grouped = !day_changed
+            && previous.sender == next.sender
+            && gap.num_seconds() >= 0
+            && gap.num_seconds() <= 5 * 60;
+        let separator = day_changed.then(|| next_local.format("%Y-%m-%d").to_string());
+        (grouped, separator)
     }
 
     pub fn insert(&mut self, character: char) {
         if !character.is_control() {
-            self.draft.push(character);
+            self.draft.insert(self.cursor, character);
+            self.cursor += 1;
         }
     }
 
-    /// Paste is text insertion, never implicit submission. Line breaks are rendered as spaces so
-    /// a send still requires a later, explicit Enter key event.
+    /// Paste is insertion only. Newlines become spaces and cannot submit the draft.
     pub fn paste(&mut self, text: &str) {
         for character in text.chars() {
             if matches!(character, '\r' | '\n') {
-                self.draft.push(' ');
+                self.insert(' ');
             } else if !character.is_control() {
-                self.draft.push(character);
+                self.insert(character);
             }
         }
     }
 
     pub fn backspace(&mut self) {
-        self.draft.pop();
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.draft.remove(self.cursor);
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor < self.draft.len() {
+            self.draft.remove(self.cursor);
+        }
+    }
+
+    pub fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.draft.len());
+    }
+
+    pub fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn end(&mut self) {
+        self.cursor = self.draft.len();
+    }
+
+    pub fn ctrl_w(&mut self) {
+        let mut start = self.cursor;
+        while start > 0 && self.draft[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        while start > 0 && !self.draft[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        self.draft.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub fn ctrl_u(&mut self) {
+        self.draft.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub fn ctrl_k(&mut self) {
+        self.draft.truncate(self.cursor);
     }
 
     pub fn take_draft(&mut self) -> String {
-        std::mem::take(&mut self.draft)
+        self.cursor = 0;
+        self.draft.drain(..).collect()
     }
 
-    pub fn frame(&self, terminal_width: u16, terminal_height: u16) -> ReplyFrame {
-        // Leave the final terminal column unused. Writing into it can trigger an automatic wrap
-        // on terminals whose right-margin behavior differs.
-        let width = terminal_width.saturating_sub(1).max(1) as usize;
-        let conversation_rows = terminal_height.saturating_sub(2) as usize;
-        let mut wrapped = self
-            .history
-            .iter()
-            .flat_map(|line| wrap_display_line(line, width))
-            .collect::<Vec<_>>();
-        if wrapped.len() > conversation_rows {
-            wrapped = wrapped.split_off(wrapped.len() - conversation_rows);
-        }
+    pub fn draft(&self) -> String {
+        self.draft.iter().collect()
+    }
 
-        let prompt_width = UnicodeWidthStr::width(REPLY_PROMPT);
-        let visible_draft = display_suffix(&self.draft, width.saturating_sub(prompt_width));
-        let input = if prompt_width >= width {
-            display_prefix(REPLY_PROMPT, width)
-        } else {
-            format!("{REPLY_PROMPT}{visible_draft}")
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn is_pinned_to_bottom(&self) -> bool {
+        self.scroll.is_none()
+    }
+
+    pub fn new_since_scroll(&self) -> usize {
+        self.new_since_scroll
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wrap_computations(&self) -> usize {
+        self.wrap_computations
+    }
+
+    pub fn scroll(&mut self, delta: ScrollDelta, terminal_height: u16) {
+        let page = terminal_height.saturating_sub(3).saturating_sub(1).max(1) as isize;
+        let amount = match delta {
+            ScrollDelta::Rows(rows) => rows,
+            ScrollDelta::Pages(pages) => pages.saturating_mul(page),
         };
-        let cursor_column = UnicodeWidthStr::width(input.as_str())
+        let viewport = terminal_height.saturating_sub(3) as usize;
+        let bottom = self.total_rows.saturating_sub(viewport);
+        let current = self.scroll.unwrap_or(bottom);
+        let next = if amount < 0 {
+            current.saturating_sub(amount.unsigned_abs())
+        } else {
+            current.saturating_add(amount as usize).min(bottom)
+        };
+        if next >= bottom {
+            self.scroll = None;
+            self.new_since_scroll = 0;
+        } else {
+            self.scroll = Some(next);
+        }
+    }
+
+    pub fn input_frame(&self, terminal_width: u16) -> ReplyInputFrame {
+        let width = terminal_width.saturating_sub(1).max(1) as usize;
+        let prompt_width = UnicodeWidthStr::width(REPLY_PROMPT);
+        if prompt_width >= width {
+            return ReplyInputFrame {
+                input: display_prefix(REPLY_PROMPT, width),
+                cursor_column: width.try_into().unwrap_or(u16::MAX),
+            };
+        }
+        let available = width - prompt_width;
+        let mut start = 0;
+        let before_width = chars_width(&self.draft[..self.cursor]);
+        if before_width > available {
+            start = self.cursor;
+            let mut used = 0;
+            while start > 0 {
+                let candidate = char_width(self.draft[start - 1]);
+                if used + candidate > available {
+                    break;
+                }
+                start -= 1;
+                used += candidate;
+            }
+        }
+        let mut end = start;
+        let mut used = 0;
+        while end < self.draft.len() {
+            let candidate = char_width(self.draft[end]);
+            if used + candidate > available {
+                break;
+            }
+            used += candidate;
+            end += 1;
+        }
+        let visible: String = self.draft[start..end].iter().collect();
+        let cursor_column = (prompt_width + chars_width(&self.draft[start..self.cursor]))
             .min(width)
             .try_into()
             .unwrap_or(u16::MAX);
-
-        ReplyFrame {
-            conversation: wrapped,
-            separator: "─".repeat(width),
-            input,
+        ReplyInputFrame {
+            input: format!("{REPLY_PROMPT}{visible}"),
             cursor_column,
         }
     }
+
+    pub fn frame(&mut self, terminal_width: u16, terminal_height: u16) -> ReplyFrame {
+        let width = terminal_width.saturating_sub(1).max(1) as usize;
+        self.ensure_layout(width);
+        let conversation_height = terminal_height.saturating_sub(3) as usize;
+        let marker = self.scroll.is_some() && self.new_since_scroll > 0 && conversation_height > 0;
+        let row_capacity = conversation_height.saturating_sub(usize::from(marker));
+        let bottom = self.total_rows.saturating_sub(row_capacity);
+        let start = self.scroll.unwrap_or(bottom).min(bottom);
+        if let Some(top) = self.scroll.as_mut() {
+            *top = start;
+        }
+        let end = (start + row_capacity).min(self.total_rows);
+        let mut conversation = self.visible_rows(start, end);
+        if marker {
+            conversation.push(ReplyRow {
+                text: centered_rule(&format!("{} new messages", self.new_since_scroll), width),
+                style: RowStyle::Dim,
+            });
+        }
+        let input = self.input_frame(terminal_width);
+        ReplyFrame {
+            conversation,
+            separator: "─".repeat(width),
+            input: input.input,
+            cursor_column: input.cursor_column,
+            footer: display_prefix(
+                "↑↓ scroll  PgUp/PgDn page  Enter send  Ctrl-C quit  /help",
+                width,
+            ),
+        }
+    }
+
+    fn ensure_layout(&mut self, width: usize) {
+        if self.layout_width == Some(width) && self.cumulative_rows.len() == self.history.len() {
+            return;
+        }
+        let mut cumulative = Vec::with_capacity(self.history.len());
+        let mut total = 0usize;
+        for stored in &mut self.history {
+            let needs_wrap = stored
+                .wrapped
+                .as_ref()
+                .is_none_or(|wrapped| wrapped.width != width);
+            if needs_wrap {
+                stored.wrapped = Some(wrap_history_entry(stored, width));
+                self.wrap_computations += 1;
+            }
+            total += stored.wrapped.as_ref().expect("wrapped entry").rows.len();
+            cumulative.push(total);
+        }
+        self.cumulative_rows = cumulative;
+        self.total_rows = total;
+        self.layout_width = Some(width);
+    }
+
+    fn visible_rows(&self, start: usize, end: usize) -> Vec<ReplyRow> {
+        if start >= end || self.history.is_empty() {
+            return Vec::new();
+        }
+        let first = self
+            .cumulative_rows
+            .partition_point(|&row_end| row_end <= start);
+        let mut output = Vec::with_capacity(end - start);
+        for index in first..self.history.len() {
+            let entry_start = if index == 0 {
+                0
+            } else {
+                self.cumulative_rows[index - 1]
+            };
+            if entry_start >= end {
+                break;
+            }
+            let rows = &self.history[index]
+                .wrapped
+                .as_ref()
+                .expect("layout ensured")
+                .rows;
+            let local_start = start.saturating_sub(entry_start);
+            let local_end = (end - entry_start).min(rows.len());
+            output.extend(rows[local_start..local_end].iter().cloned());
+        }
+        output
+    }
+}
+
+fn wrap_history_entry(stored: &StoredEntry, width: usize) -> WrappedEntry {
+    let _identity = stored.id;
+    let mut rows = Vec::new();
+    if let Some(date) = &stored.day_separator {
+        rows.push(ReplyRow {
+            text: centered_rule(date, width),
+            style: RowStyle::Dim,
+        });
+    }
+    match &stored.entry {
+        HistoryEntry::System(text) => rows.extend(wrap_display_line(text, width).into_iter().map(
+            |text| ReplyRow {
+                text,
+                style: RowStyle::Dim,
+            },
+        )),
+        HistoryEntry::Chat(chat) => rows.extend(wrap_chat(chat, stored.grouped, width)),
+    }
+    WrappedEntry { width, rows }
+}
+
+fn wrap_chat(chat: &ChatEntry, grouped: bool, width: usize) -> Vec<ReplyRow> {
+    let time = chat.timestamp.with_timezone(&Local).format("%H:%M");
+    let palette = sender_palette(&chat.sender);
+    let (prefix, columns) = if width < 24 {
+        let sender = if grouped { "·" } else { &chat.sender };
+        let delimiter = if grouped { " " } else { ": " };
+        (format!("{time} {sender}{delimiter}"), 0)
+    } else {
+        let sender_width = if width < 40 { width / 3 } else { 12 };
+        let sender = if grouped {
+            pad_display("·", sender_width)
+        } else {
+            pad_display(&chat.sender, sender_width)
+        };
+        let prefix = format!("{time} {sender} ");
+        let columns = UnicodeWidthStr::width(prefix.as_str()) as u16;
+        (prefix, columns)
+    };
+    wrap_prefixed(&prefix, &chat.text, width, columns, palette)
+}
+
+fn wrap_prefixed(
+    prefix: &str,
+    body: &str,
+    width: usize,
+    columns: u16,
+    palette: u8,
+) -> Vec<ReplyRow> {
+    let prefix_width = UnicodeWidthStr::width(prefix);
+    if prefix_width >= width {
+        return wrap_display_line(&format!("{prefix}{body}"), width)
+            .into_iter()
+            .map(|text| ReplyRow {
+                text,
+                style: RowStyle::Plain,
+            })
+            .collect();
+    }
+    let body_width = width - prefix_width;
+    let wrapped = wrap_display_line(body, body_width);
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| ReplyRow {
+            text: if index == 0 {
+                format!("{prefix}{text}")
+            } else {
+                format!("{}{text}", " ".repeat(prefix_width))
+            },
+            style: if index == 0 {
+                RowStyle::MessagePrefix { columns, palette }
+            } else {
+                RowStyle::Plain
+            },
+        })
+        .collect()
 }
 
 fn wrap_display_line(line: &str, width: usize) -> Vec<String> {
@@ -150,7 +556,7 @@ fn wrap_display_line(line: &str, width: usize) -> Vec<String> {
     let mut rows = vec![String::new()];
     let mut row_width = 0usize;
     for character in line.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        let character_width = char_width(character);
         if row_width > 0 && row_width + character_width > width {
             rows.push(String::new());
             row_width = 0;
@@ -161,28 +567,58 @@ fn wrap_display_line(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn display_suffix(value: &str, width: usize) -> String {
+fn centered_rule(label: &str, width: usize) -> String {
+    let label = format!("  {label}  ");
+    let label_width = UnicodeWidthStr::width(label.as_str());
+    if label_width >= width {
+        return display_prefix(&label, width);
+    }
+    let remaining = width - label_width;
+    format!(
+        "{}{}{}",
+        "─".repeat(remaining / 2),
+        label,
+        "─".repeat(remaining - remaining / 2)
+    )
+}
+
+fn pad_display(value: &str, width: usize) -> String {
+    let current = UnicodeWidthStr::width(value);
+    if current <= width {
+        return format!("{value}{}", " ".repeat(width - current));
+    }
     if width == 0 {
         return String::new();
     }
-    let mut characters = Vec::new();
-    let mut used = 0usize;
-    for character in value.chars().rev() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + character_width > width {
-            break;
-        }
-        characters.push(character);
-        used += character_width;
+    let mut shortened = display_prefix(value, width.saturating_sub(1));
+    shortened.push('…');
+    let shortened_width = UnicodeWidthStr::width(shortened.as_str());
+    shortened.push_str(&" ".repeat(width.saturating_sub(shortened_width)));
+    shortened
+}
+
+fn sender_palette(sender: &str) -> u8 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in sender.to_lowercase().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
     }
-    characters.into_iter().rev().collect()
+    (hash % 8) as u8
+}
+
+fn char_width(character: char) -> usize {
+    UnicodeWidthChar::width(character).unwrap_or(0)
+}
+
+fn chars_width(characters: &[char]) -> usize {
+    characters.iter().copied().map(char_width).sum()
 }
 
 fn display_prefix(value: &str, width: usize) -> String {
     let mut output = String::new();
     let mut used = 0usize;
     for character in value.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        let character_width = char_width(character);
         if used + character_width > width {
             break;
         }
@@ -535,6 +971,179 @@ mod tests {
         assert!(!rendered.chars().any(char::is_control));
     }
 
+    fn chat_at(day: u32, minute: u32, sender: &str, text: &str) -> ChatEntry {
+        ChatEntry {
+            timestamp: Utc
+                .with_ymd_and_hms(2026, 9, day, 12, minute, 0)
+                .single()
+                .expect("synthetic timestamp"),
+            sender: sender.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    fn texts(frame: &ReplyFrame) -> Vec<&str> {
+        frame
+            .conversation
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn reply_ui_groups_only_adjacent_same_sender_messages_within_five_minutes() {
+        let mut ui = ReplyUiState::default();
+        ui.push_chat(chat_at(2, 0, "Alice", "one"));
+        ui.push_chat(chat_at(2, 4, "Alice", "two"));
+        ui.push_chat(chat_at(2, 5, "민준", "three"));
+        ui.push_chat(chat_at(2, 11, "민준", "four"));
+        ui.push_system("status");
+        ui.push_chat(chat_at(2, 12, "민준", "five"));
+
+        let frame = ui.frame(80, 20);
+        let rendered = texts(&frame);
+        assert!(rendered[1][6..].starts_with("·"));
+        assert!(rendered[2][6..].starts_with("민준"));
+        assert!(rendered[3][6..].starts_with("민준"));
+        assert_eq!(rendered[4], "status");
+        assert!(rendered[5][6..].starts_with("민준"));
+    }
+
+    #[test]
+    fn reply_ui_inserts_local_day_separator_and_breaks_grouping() {
+        let mut ui = ReplyUiState::default();
+        ui.push_chat(chat_at(2, 59, "Alice", "before"));
+        ui.push_chat(chat_at(3, 0, "Alice", "after"));
+
+        let frame = ui.frame(50, 10);
+        assert!(frame.conversation[1].text.contains("2026-09-03"));
+        assert_eq!(frame.conversation[1].style, RowStyle::Dim);
+        assert!(frame.conversation[2].text[6..].starts_with("Alice"));
+    }
+
+    #[test]
+    fn reply_ui_sender_columns_measure_cjk_and_degrade_at_narrow_widths() {
+        let mut wide = ReplyUiState::default();
+        wide.push_chat(chat_at(2, 0, "민준", "body"));
+        wide.push_chat(chat_at(2, 1, "ABCDEFGHIJKLM", "long"));
+        let frame = wide.frame(80, 10);
+        let rows = texts(&frame);
+        assert_eq!(
+            UnicodeWidthStr::width(rows[0].split("body").next().unwrap()),
+            19
+        );
+        assert!(rows[1].contains("ABCDEFGHIJK…"));
+
+        let mut medium = ReplyUiState::default();
+        medium.push_chat(chat_at(2, 0, "Alice", "body"));
+        let medium_frame = medium.frame(30, 8);
+        let medium_row = texts(&medium_frame)[0];
+        assert_eq!(
+            UnicodeWidthStr::width(medium_row.split("body").next().unwrap()),
+            16
+        );
+
+        let mut tiny = ReplyUiState::default();
+        tiny.push_chat(chat_at(2, 0, "민준", "body"));
+        assert!(texts(&tiny.frame(23, 8))[0][6..].starts_with("민준: body"));
+    }
+
+    #[test]
+    fn reply_ui_wrap_cache_reuses_history_and_wraps_only_appends() {
+        let mut ui = ReplyUiState::default();
+        for index in 0..100 {
+            ui.push_system(format!("synthetic line {index}"));
+        }
+        ui.frame(80, 8);
+        let primed = ui.wrap_computations();
+        ui.frame(80, 8);
+        assert_eq!(ui.wrap_computations(), primed);
+
+        ui.push_system("one appended line");
+        ui.frame(80, 8);
+        assert_eq!(ui.wrap_computations(), primed + 1);
+    }
+
+    #[test]
+    fn reply_ui_scroll_tracks_unread_and_clamps_back_to_bottom() {
+        let mut ui = ReplyUiState::default();
+        for index in 0..10 {
+            ui.push_system(format!("line {index}"));
+        }
+        ui.frame(40, 8);
+        ui.scroll(ScrollDelta::Rows(-2), 8);
+        ui.push_chat(chat_at(2, 0, "Alice", "new"));
+        ui.push_chat(chat_at(2, 1, "민준", "newer"));
+        let frame = ui.frame(40, 8);
+        assert!(frame
+            .conversation
+            .last()
+            .unwrap()
+            .text
+            .contains("2 new messages"));
+        assert_eq!(ui.new_since_scroll(), 2);
+
+        ui.scroll(ScrollDelta::Rows(isize::MAX), 8);
+        assert_eq!(ui.new_since_scroll(), 0);
+        assert!(ui.is_pinned_to_bottom());
+        assert!(!texts(&ui.frame(40, 8))
+            .iter()
+            .any(|row| row.contains("new messages")));
+    }
+
+    #[test]
+    fn reply_ui_edits_unicode_draft_at_the_cursor() {
+        let mut ui = ReplyUiState::default();
+        ui.paste("한글");
+        ui.left();
+        ui.insert('어');
+        assert_eq!(ui.draft(), "한어글");
+        assert_eq!(ui.cursor(), 2);
+        ui.home();
+        ui.insert('\u{1112}');
+        ui.insert('\u{1161}');
+        assert!(ui.draft().starts_with("\u{1112}\u{1161}"));
+
+        ui.end();
+        ui.paste("a\r\nb");
+        ui.left();
+        ui.backspace();
+        ui.delete();
+        ui.ctrl_w();
+        ui.ctrl_u();
+        ui.ctrl_k();
+        assert_eq!(ui.cursor(), 0);
+    }
+
+    #[test]
+    fn reply_ui_paste_in_middle_never_submits() {
+        let mut ui = ReplyUiState::default();
+        ui.paste("ac");
+        ui.left();
+        ui.paste("한\n글");
+        assert_eq!(ui.draft(), "a한 글c");
+        assert_eq!(ui.cursor(), 4);
+    }
+
+    #[test]
+    fn reply_ui_horizontal_input_scroll_keeps_wide_chars_whole_and_cursor_exact() {
+        let mut ui = ReplyUiState::default();
+        ui.paste("abc한글def");
+        let end = ui.input_frame(12);
+        assert!(end.input.is_char_boundary(end.input.len()));
+        assert!(!end.input.starts_with('글'));
+        assert!(end.cursor_column <= 10);
+
+        ui.home();
+        ui.right();
+        ui.right();
+        ui.right();
+        ui.right();
+        let middle = ui.input_frame(20);
+        assert_eq!(middle.cursor_column, 12);
+        assert_eq!(middle.input, "reply> abc한글def");
+    }
+
     #[test]
     fn reply_ui_sanitizes_every_history_line_before_rendering() {
         let mut ui = ReplyUiState::default();
@@ -544,7 +1153,7 @@ mod tests {
         assert!(frame
             .conversation
             .iter()
-            .all(|line| !line.chars().any(char::is_control)));
+            .all(|line| !line.text.chars().any(char::is_control)));
     }
 
     #[test]
@@ -589,10 +1198,7 @@ mod tests {
         ui.push_line("[now] Synthetic Room / Tester: 새 메시지");
 
         let frame = ui.frame(80, 8);
-        assert_eq!(
-            frame.conversation,
-            ["[now] Synthetic Room / Tester: 새 메시지"]
-        );
+        assert_eq!(texts(&frame), ["[now] Synthetic Room / Tester: 새 메시지"]);
         assert_eq!(frame.input, "reply> 확인 중");
 
         ui.backspace();
@@ -606,14 +1212,28 @@ mod tests {
         ui.paste("한글\n붙여넣기");
 
         let narrow = ui.frame(7, 5);
-        assert_eq!(narrow.conversation, ["abcdef", "ghij"]);
+        assert_eq!(texts(&narrow), ["abcdef", "ghij"]);
         assert_eq!(narrow.separator, "──────");
         assert_eq!(narrow.input, "reply>");
 
         let wide = ui.frame(40, 5);
-        assert_eq!(wide.conversation, ["abcdefghij"]);
+        assert_eq!(texts(&wide), ["abcdefghij"]);
         assert_eq!(wide.input, "reply> 한글 붙여넣기");
         assert_eq!(ui.take_draft(), "한글 붙여넣기");
+    }
+
+    #[test]
+    fn reply_ui_history_eviction_retains_cached_rows() {
+        let mut ui = ReplyUiState::default();
+        for index in 0..REPLY_HISTORY_LIMIT {
+            ui.push_system(format!("cached {index}"));
+        }
+        ui.frame(80, 8);
+        let primed = ui.wrap_computations();
+        ui.push_system("cached appended");
+        let frame = ui.frame(80, 4);
+        assert_eq!(ui.wrap_computations(), primed + 1);
+        assert_eq!(texts(&frame), ["cached appended"]);
     }
 
     #[test]
@@ -626,7 +1246,7 @@ mod tests {
 
         assert_eq!(ui.take_draft(), "first  second");
         let frame = ui.frame(80, 4);
-        assert_eq!(frame.conversation, ["line 1999", "line 2000"]);
+        assert_eq!(texts(&frame), ["line 2000"]);
     }
 
     #[test]
