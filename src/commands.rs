@@ -47,9 +47,90 @@ mod media_commands;
 mod permissions;
 mod source_adapter;
 
+#[derive(Debug, PartialEq, Eq)]
 enum ReplyTerminalAction {
     Submit(String),
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ReplyRedraw {
+    #[default]
+    None,
+    Input,
+    Full,
+}
+
+#[derive(Debug, Default)]
+struct ReplyInputBatch {
+    actions: Vec<ReplyTerminalAction>,
+    redraw: ReplyRedraw,
+}
+
+const REPLY_INPUT_BURST_GRACE: Duration = Duration::from_millis(2);
+const REPLY_INPUT_BATCH_LIMIT: Duration = Duration::from_millis(8);
+const REPLY_INPUT_EVENT_LIMIT: usize = 256;
+
+/// Apply already-decoded terminal events without performing terminal I/O.
+///
+/// Keeping this as one batch means callers can drain a rapid key/IME burst and redraw only once.
+/// Paste is deliberately its own event path: CR/LF inside bracketed paste is text, while CR/LF
+/// delivered as a key event is an explicit submission for terminals that do not use `Enter`.
+fn apply_reply_input_events(
+    state: &mut ReplyUiState,
+    events: impl IntoIterator<Item = Event>,
+) -> ReplyInputBatch {
+    let mut batch = ReplyInputBatch::default();
+    for event in events {
+        match event {
+            Event::Resize(_, _) => batch.redraw = ReplyRedraw::Full,
+            Event::Paste(text) => {
+                state.paste(&text);
+                if batch.redraw == ReplyRedraw::None {
+                    batch.redraw = ReplyRedraw::Input;
+                }
+            }
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('c' | 'd'))
+                {
+                    batch.actions.push(ReplyTerminalAction::Quit);
+                    break;
+                }
+                match key.code {
+                    KeyCode::Enter | KeyCode::Char('\r' | '\n') => {
+                        batch
+                            .actions
+                            .push(ReplyTerminalAction::Submit(state.take_draft()));
+                        if batch.redraw == ReplyRedraw::None {
+                            batch.redraw = ReplyRedraw::Input;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        state.backspace();
+                        if batch.redraw == ReplyRedraw::None {
+                            batch.redraw = ReplyRedraw::Input;
+                        }
+                    }
+                    KeyCode::Char(character)
+                        if !character.is_control()
+                            && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        // ALT, SHIFT, SUPER, and enhanced-keyboard state may accompany valid
+                        // text on macOS terminals and IMEs. Only Control changes a printable
+                        // character into a command here.
+                        state.insert(character);
+                        if batch.redraw == ReplyRedraw::None {
+                            batch.redraw = ReplyRedraw::Input;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    batch
 }
 
 struct ReplyTerminal {
@@ -61,16 +142,18 @@ struct ReplyTerminal {
 impl ReplyTerminal {
     fn new() -> Result<Self> {
         terminal::enable_raw_mode().context("enable reply terminal raw mode")?;
-        let mut output = io::stdout();
-        if let Err(error) = execute!(output, EnterAlternateScreen, EnableBracketedPaste, Hide) {
-            let _ = terminal::disable_raw_mode();
-            return Err(error).context("initialize reply terminal screen");
-        }
         let mut terminal = Self {
-            output,
+            output: io::stdout(),
             state: ReplyUiState::default(),
             active: true,
         };
+        execute!(
+            terminal.output,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            Hide
+        )
+        .context("initialize reply terminal screen")?;
         terminal.render()?;
         Ok(terminal)
     }
@@ -80,44 +163,49 @@ impl ReplyTerminal {
         self.render()
     }
 
-    fn poll_action(&mut self, timeout: Duration) -> Result<Option<ReplyTerminalAction>> {
+    fn poll_actions(&mut self, timeout: Duration) -> Result<Option<Vec<ReplyTerminalAction>>> {
         if !event::poll(timeout).context("poll reply terminal input")? {
             return Ok(None);
         }
-        match event::read().context("read reply terminal input")? {
-            Event::Resize(_, _) => self.render()?,
-            Event::Paste(text) => {
-                self.state.paste(&text);
-                self.render()?;
+        let batch_started = Instant::now();
+        let mut events = Vec::with_capacity(16);
+        events.push(event::read().context("read reply terminal input")?);
+        while events.len() < REPLY_INPUT_EVENT_LIMIT {
+            let remaining = REPLY_INPUT_BATCH_LIMIT.saturating_sub(batch_started.elapsed());
+            if remaining.is_zero()
+                || !event::poll(REPLY_INPUT_BURST_GRACE.min(remaining))
+                    .context("poll reply terminal input burst")?
+            {
+                break;
             }
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && matches!(key.code, KeyCode::Char('c' | 'd'))
-                {
-                    return Ok(Some(ReplyTerminalAction::Quit));
-                }
-                match key.code {
-                    KeyCode::Enter => {
-                        return Ok(Some(ReplyTerminalAction::Submit(self.state.take_draft())));
-                    }
-                    KeyCode::Backspace => {
-                        self.state.backspace();
-                        self.render()?;
-                    }
-                    KeyCode::Char(character)
-                        if !key
-                            .modifiers
-                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                    {
-                        self.state.insert(character);
-                        self.render()?;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
+            events.push(event::read().context("read reply terminal input burst")?);
         }
-        Ok(None)
+
+        let batch = apply_reply_input_events(&mut self.state, events);
+        match batch.redraw {
+            ReplyRedraw::None => {}
+            ReplyRedraw::Input => self.render_input()?,
+            ReplyRedraw::Full => self.render()?,
+        }
+        Ok(Some(batch.actions))
+    }
+
+    fn render_input(&mut self) -> Result<()> {
+        let (width, height) = terminal::size().context("read reply terminal size")?;
+        let frame = self.state.frame(width, height);
+        let input_row = height.saturating_sub(1);
+        queue!(
+            self.output,
+            Hide,
+            MoveTo(0, input_row),
+            Clear(ClearType::CurrentLine),
+            Print(&frame.input),
+            MoveTo(frame.cursor_column.min(width.saturating_sub(1)), input_row),
+            Show
+        )
+        .context("draw reply input")?;
+        self.output.flush().context("flush reply terminal")?;
+        Ok(())
     }
 
     fn render(&mut self) -> Result<()> {
@@ -678,9 +766,11 @@ fn process_pending_reply_events(
     no_open: bool,
     data_dir: &Path,
 ) -> Result<bool> {
-    while let Some(action) = terminal.poll_action(Duration::ZERO)? {
-        if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
-            return Ok(true);
+    while let Some(actions) = terminal.poll_actions(Duration::ZERO)? {
+        for action in actions {
+            if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -731,9 +821,11 @@ fn wait_for_next_poll_with_reply(
         if remaining.is_zero() {
             return Ok(false);
         }
-        if let Some(action) = terminal.poll_action(remaining.min(Duration::from_millis(250)))? {
-            if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
-                return Ok(true);
+        if let Some(actions) = terminal.poll_actions(remaining.min(Duration::from_millis(250)))? {
+            for action in actions {
+                if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
+                    return Ok(true);
+                }
             }
         }
     }
@@ -1098,6 +1190,131 @@ fn run_doctor(
         }
     });
     print_payload(json, &payload)
+}
+
+#[cfg(test)]
+mod reply_terminal_tests {
+    use super::{apply_reply_input_events, ReplyRedraw, ReplyTerminalAction};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use katok::watch::ReplyUiState;
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    #[test]
+    fn rapid_ascii_and_korean_input_is_applied_as_one_redraw_batch() {
+        let mut state = ReplyUiState::default();
+        let events = "rapid 확인 중"
+            .chars()
+            .map(|character| key(KeyCode::Char(character), KeyModifiers::NONE));
+
+        let batch = apply_reply_input_events(&mut state, events);
+
+        assert_eq!(batch.redraw, ReplyRedraw::Input);
+        assert!(batch.actions.is_empty());
+        assert_eq!(state.frame(80, 5).input, "reply> rapid 확인 중");
+    }
+
+    #[test]
+    fn enter_code_and_cr_lf_character_variants_submit() {
+        for enter in [
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            key(KeyCode::Char('\r'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('\n'), KeyModifiers::NONE),
+        ] {
+            let mut state = ReplyUiState::default();
+            state.paste("확인");
+
+            let batch = apply_reply_input_events(&mut state, [enter]);
+
+            assert_eq!(
+                batch.actions,
+                [ReplyTerminalAction::Submit("확인".to_string())]
+            );
+            assert_eq!(state.frame(80, 5).input, "reply> ");
+        }
+    }
+
+    #[test]
+    fn paste_newlines_do_not_submit_and_a_later_enter_does() {
+        let mut state = ReplyUiState::default();
+        let paste =
+            apply_reply_input_events(&mut state, [Event::Paste("first\r\n둘째".to_string())]);
+
+        assert!(paste.actions.is_empty());
+        assert_eq!(state.frame(80, 5).input, "reply> first  둘째");
+
+        let enter = apply_reply_input_events(&mut state, [key(KeyCode::Enter, KeyModifiers::NONE)]);
+        assert_eq!(
+            enter.actions,
+            [ReplyTerminalAction::Submit("first  둘째".to_string())]
+        );
+    }
+
+    #[test]
+    fn backspace_resize_and_incoming_history_preserve_the_draft() {
+        let mut state = ReplyUiState::default();
+        let first = apply_reply_input_events(
+            &mut state,
+            "abc한"
+                .chars()
+                .map(|character| key(KeyCode::Char(character), KeyModifiers::NONE)),
+        );
+        assert_eq!(first.redraw, ReplyRedraw::Input);
+
+        state.push_line("[now] Synthetic Room / Tester: incoming");
+        let second = apply_reply_input_events(
+            &mut state,
+            [
+                Event::Resize(40, 8),
+                key(KeyCode::Backspace, KeyModifiers::NONE),
+                key(KeyCode::Char('글'), KeyModifiers::NONE),
+            ],
+        );
+
+        assert_eq!(second.redraw, ReplyRedraw::Full);
+        let frame = state.frame(40, 8);
+        assert_eq!(frame.input, "reply> abc글");
+        assert_eq!(
+            frame.conversation,
+            ["[now] Synthetic Room / Tester: incoming"]
+        );
+    }
+
+    #[test]
+    fn printable_alt_characters_are_kept_but_control_commands_remain_explicit() {
+        let mut state = ReplyUiState::default();
+        let batch = apply_reply_input_events(
+            &mut state,
+            [
+                key(KeyCode::Char('é'), KeyModifiers::ALT),
+                key(KeyCode::Char('A'), KeyModifiers::SHIFT),
+                key(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            ],
+        );
+
+        assert_eq!(state.frame(80, 5).input, "reply> éA");
+        assert_eq!(batch.actions, [ReplyTerminalAction::Quit]);
+    }
+
+    #[test]
+    fn release_events_are_ignored() {
+        let mut state = ReplyUiState::default();
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('x'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        });
+
+        let batch = apply_reply_input_events(&mut state, [event]);
+
+        assert_eq!(batch.redraw, ReplyRedraw::None);
+        assert!(batch.actions.is_empty());
+        assert_eq!(state.frame(80, 5).input, "reply> ");
+    }
 }
 
 #[cfg(all(test, target_os = "macos", feature = "private-send"))]
