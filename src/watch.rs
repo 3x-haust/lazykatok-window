@@ -550,13 +550,16 @@ fn wrap_prefixed(
 }
 
 fn wrap_display_line(line: &str, width: usize) -> Vec<String> {
-    if line.is_empty() {
+    if line.is_empty() || width == 0 {
         return vec![String::new()];
     }
     let mut rows = vec![String::new()];
     let mut row_width = 0usize;
     for character in line.chars() {
         let character_width = char_width(character);
+        if character_width > width {
+            continue;
+        }
         if row_width > 0 && row_width + character_width > width {
             rows.push(String::new());
             row_width = 0;
@@ -1046,6 +1049,43 @@ mod tests {
         let mut tiny = ReplyUiState::default();
         tiny.push_chat(chat_at(2, 0, "민준", "body"));
         assert!(texts(&tiny.frame(23, 8))[0][6..].starts_with("민준: body"));
+    }
+
+    #[test]
+    fn wrap_display_line_drops_wide_characters_that_cannot_fit() {
+        let rows = wrap_display_line("한a글", 1);
+
+        assert_eq!(rows, ["a"]);
+        assert!(rows
+            .iter()
+            .all(|row| UnicodeWidthStr::width(row.as_str()) <= 1));
+        assert!(rows
+            .iter()
+            .all(|row| row.chars().all(|character| char_width(character) <= 1)));
+    }
+
+    #[test]
+    fn wrap_display_line_keeps_two_cell_characters_at_width_two() {
+        let rows = wrap_display_line("한a글", 2);
+
+        assert_eq!(rows, ["한", "a", "글"]);
+        assert!(rows
+            .iter()
+            .all(|row| UnicodeWidthStr::width(row.as_str()) <= 2));
+    }
+
+    #[test]
+    fn wrap_display_line_never_exceeds_requested_width() {
+        let line = "한a\u{0301}글bc";
+
+        for width in 1..=4 {
+            let rows = wrap_display_line(line, width);
+            assert!(
+                rows.iter()
+                    .all(|row| UnicodeWidthStr::width(row.as_str()) <= width),
+                "width {width}: {rows:?}"
+            );
+        }
     }
 
     #[test]
