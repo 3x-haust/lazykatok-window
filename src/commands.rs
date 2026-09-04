@@ -1368,17 +1368,44 @@ fn effective_watch_format(
     })
 }
 
-/// Order the interactive room list most-recent-first: chats the source can
-/// date by their latest message come before undated ones, ties break by name
-/// then id so the list is stable across runs.
+/// Order the interactive room list oldest-first so the newest rooms sit at
+/// the bottom, right above the input prompt. Chats the source cannot date go
+/// to the top; ties break by name then id so the list is stable across runs.
 fn order_chats_for_selection(chats: &mut [ChatSummary]) {
     chats.sort_by(|left, right| {
-        right
-            .last_message_at
-            .cmp(&left.last_message_at)
+        left.last_message_at
+            .cmp(&right.last_message_at)
             .then_with(|| left.chat_name.cmp(&right.chat_name))
             .then_with(|| left.chat_id.cmp(&right.chat_id))
     });
+}
+
+/// Numbering runs bottom-up: the newest room (last row, nearest the prompt)
+/// is 1 and numbers grow toward the top of the list.
+fn selection_number(index: usize, total: usize) -> usize {
+    total - index
+}
+
+fn selection_index(number: usize, total: usize) -> Option<usize> {
+    (1..=total).contains(&number).then(|| total - number)
+}
+
+fn write_chat_selection_list(stderr: &mut impl Write, chats: &[ChatSummary]) -> Result<()> {
+    writeln!(stderr, "Choose a chat to watch:").context("write chat selection prompt")?;
+    let total = chats.len();
+    for (index, chat) in chats.iter().enumerate() {
+        writeln!(
+            stderr,
+            "{:>3}. {} ({}, {})",
+            selection_number(index, total),
+            sanitize_terminal_text(&chat.chat_name),
+            sanitize_terminal_text(&chat.chat_type),
+            sanitize_terminal_text(&chat.chat_id)
+        )
+        .context("write chat selection option")?;
+    }
+    write!(stderr, "chat number or chat_id> ").context("write chat selection input prompt")?;
+    Ok(())
 }
 
 fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Result<ChatSummary> {
@@ -1391,19 +1418,7 @@ fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Re
     order_chats_for_selection(&mut chats);
 
     let mut stderr = io::stderr().lock();
-    writeln!(stderr, "Choose a chat to watch:").context("write chat selection prompt")?;
-    for (index, chat) in chats.iter().enumerate() {
-        writeln!(
-            stderr,
-            "{:>3}. {} ({}, {})",
-            index + 1,
-            sanitize_terminal_text(&chat.chat_name),
-            sanitize_terminal_text(&chat.chat_type),
-            sanitize_terminal_text(&chat.chat_id)
-        )
-        .context("write chat selection option")?;
-    }
-    write!(stderr, "chat number or chat_id> ").context("write chat selection input prompt")?;
+    write_chat_selection_list(&mut stderr, &chats)?;
     stderr.flush().context("flush chat selection prompt")?;
 
     let mut input = String::new();
@@ -1414,11 +1429,10 @@ fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Re
     if input.is_empty() {
         anyhow::bail!("no chat selected");
     }
-    if let Ok(index) = input.parse::<usize>() {
-        return chats
-            .get(index.saturating_sub(1))
-            .cloned()
-            .with_context(|| format!("chat number {index} is out of range"));
+    if let Ok(number) = input.parse::<usize>() {
+        let index = selection_index(number, chats.len())
+            .with_context(|| format!("chat number {number} is out of range"))?;
+        return Ok(chats[index].clone());
     }
     chats
         .into_iter()
@@ -1991,7 +2005,7 @@ mod chat_selection_tests {
     }
 
     #[test]
-    fn selection_orders_latest_first_and_undated_last() {
+    fn selection_orders_oldest_first_so_newest_sits_at_the_prompt() {
         let mut chats = vec![
             summary("chat-none", "Undated", None),
             summary("chat-old", "Older", Some("2026-01-01T09:00:00Z")),
@@ -2000,7 +2014,37 @@ mod chat_selection_tests {
         ];
         order_chats_for_selection(&mut chats);
         let ids: Vec<_> = chats.iter().map(|chat| chat.chat_id.as_str()).collect();
-        assert_eq!(ids, ["chat-new", "chat-mid", "chat-old", "chat-none"]);
+        assert_eq!(ids, ["chat-none", "chat-old", "chat-mid", "chat-new"]);
+    }
+
+    #[test]
+    fn selection_numbers_run_bottom_up_so_the_newest_room_is_one() {
+        let mut chats = vec![
+            summary("chat-old", "Older", Some("2026-01-01T09:00:00Z")),
+            summary("chat-new", "Newest", Some("2026-01-03T09:00:00Z")),
+        ];
+        order_chats_for_selection(&mut chats);
+
+        let mut list = Vec::new();
+        write_chat_selection_list(&mut list, &chats).expect("write list");
+        let text = String::from_utf8(list).expect("utf8");
+        assert!(text.contains("2. Older"), "oldest row numbered 2: {text}");
+        assert!(text.contains("1. Newest"), "newest row numbered 1: {text}");
+        let older_line = text
+            .lines()
+            .find(|line| line.contains("Older"))
+            .expect("older line");
+        let newer_line = text
+            .lines()
+            .find(|line| line.contains("Newest"))
+            .expect("newest line");
+        let older_at = text.rfind(older_line.trim()).expect("older position");
+        let newer_at = text.rfind(newer_line.trim()).expect("newer position");
+        assert!(older_at < newer_at, "oldest renders above newest: {text}");
+
+        assert_eq!(selection_index(1, 2), Some(1));
+        assert_eq!(selection_index(2, 2), Some(0));
+        assert_eq!(selection_index(3, 2), None);
     }
 
     #[test]
