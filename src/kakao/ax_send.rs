@@ -75,7 +75,6 @@ const KEY_V: u16 = 9;
 const ATTR_WINDOWS: &str = "AXWindows";
 const ATTR_CHILDREN: &str = "AXChildren";
 const ATTR_TITLE: &str = "AXTitle";
-const ATTR_ENABLED: &str = "AXEnabled";
 const ATTR_ROLE: &str = "AXRole";
 const ATTR_VALUE: &str = "AXValue";
 
@@ -122,9 +121,6 @@ unsafe extern "C" {
     fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
     fn AXIsProcessTrusted() -> bool;
     fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> bool;
-    fn CFGetTypeID(cf: CFTypeRef) -> usize;
-    fn CFBooleanGetTypeID() -> usize;
-    fn CFBooleanGetValue(boolean: CFBooleanRef) -> bool;
 
     // Carbon Pasteboard Manager. Lives in the same framework already linked above, so writing
     // the clipboard costs no extra dependency (NSPasteboard would drag in AppKit bindings).
@@ -1919,6 +1915,15 @@ pub fn send_to_open_window(
     if accepted(30) {
         return Ok(());
     }
+
+    // The web-backed compose ignores synthesized Enter entirely, and its Send button exposes
+    // no AXActions, so AXPress cannot fire it either. A real click on the button still works.
+    // The room window is frontmost here (raised above), so the click at its button center
+    // cannot land in any other window — the same coordinate-safety argument the chat-list
+    // double-click relies on.
+    if click_send_button(window.as_raw(), pid) && accepted(30) {
+        return Ok(());
+    }
     Err(SendError::NotSent)
 }
 
@@ -1929,9 +1934,6 @@ pub fn send_to_open_window(
 fn press_send_button(window: AXUIElementRef) -> bool {
     fn search(el: AXUIElementRef) -> bool {
         if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
-            if !attr_bool(el, ATTR_ENABLED).unwrap_or(true) {
-                return false;
-            }
             let action = CFString::new(ACTION_PRESS);
             return unsafe {
                 AXUIElementPerformAction(el, action.as_concrete_TypeRef()) == AX_SUCCESS
@@ -1944,15 +1946,57 @@ fn press_send_button(window: AXUIElementRef) -> bool {
     search(window)
 }
 
-fn attr_bool(el: AXUIElementRef, attribute: &str) -> Option<bool> {
-    let raw = copy_attr(el, attribute)?;
-    let value = if unsafe { CFGetTypeID(raw) == CFBooleanGetTypeID() } {
-        Some(unsafe { CFBooleanGetValue(raw as CFBooleanRef) })
-    } else {
-        None
+/// Click the room window's Send button at its on-screen center.
+///
+/// Only safe while the room window is verifiably frontmost: the click is posted to the global
+/// HID tap at screen coordinates, exactly like the chat-list double-click in
+/// `open_row_by_click`. Returns `false` when the button or its geometry cannot be read, or the
+/// frontmost check fails, so the caller's error path stays reachable.
+fn click_send_button(window: AXUIElementRef, pid: i32) -> bool {
+    let mut button: Option<AXUIElementRef> = None;
+    fn search(el: AXUIElementRef, found: &mut Option<AXUIElementRef>) {
+        if found.is_some() {
+            return;
+        }
+        if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
+            *found = Some(el);
+            return;
+        }
+        for child in child_elements(el, ATTR_CHILDREN) {
+            search(child.as_raw(), found);
+            if found.is_some() {
+                return;
+            }
+        }
+    }
+    search(window, &mut button);
+    let Some(button) = button else {
+        return false;
     };
-    unsafe { CFRelease(raw) };
-    value
+    let Some(rect) = frame_of(button) else {
+        return false;
+    };
+    let center = CGPoint::new(
+        rect.origin.x + rect.size.width / 2.0,
+        rect.origin.y + rect.size.height / 2.0,
+    );
+    let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
+        return false;
+    };
+    front_then(pid, || {
+        for kind in [CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
+            let Ok(event) =
+                CGEvent::new_mouse_event(source.clone(), kind, center, CGMouseButton::Left)
+            else {
+                return false;
+            };
+            event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
+            tag_synthetic(&event);
+            event.post(CGEventTapLocation::HID);
+        }
+        true
+    })
+    .unwrap_or(false)
 }
 
 /// Put UTF-8 `text` on the clipboard.
