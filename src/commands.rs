@@ -75,6 +75,8 @@ const REPLY_INPUT_BURST_GRACE: Duration = Duration::from_millis(2);
 const REPLY_INPUT_BATCH_LIMIT: Duration = Duration::from_millis(8);
 const REPLY_INPUT_EVENT_LIMIT: usize = 256;
 const REPLY_PUMP_SLICE: Duration = Duration::from_millis(16);
+// Reply Enter is explicit intent, so do not inherit the measured 15-second focus-wait default.
+const REPLY_FOCUS_WAIT_SECS: u64 = 2;
 
 #[derive(Debug)]
 enum ReplyPollOutcome {
@@ -93,6 +95,31 @@ enum ReplyPollOutcome {
         poll: u64,
         error: anyhow::Error,
     },
+}
+
+struct ReplySendRequest {
+    chat_id: String,
+    body: String,
+    no_open: bool,
+    data_dir: PathBuf,
+    outcome_tx: Sender<Result<usize>>,
+}
+
+struct ReplySendState {
+    outcome_tx: Sender<Result<usize>>,
+    outcome_rx: Receiver<Result<usize>>,
+    in_flight: bool,
+}
+
+impl ReplySendState {
+    fn new() -> Self {
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        Self {
+            outcome_tx,
+            outcome_rx,
+            in_flight: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +141,12 @@ struct ReplyPollWorkerOptions {
 trait ReplyPollRenderer {
     fn render_system(&mut self, line: String) -> Result<()>;
     fn render_chat(&mut self, entry: ChatEntry) -> Result<()>;
+}
+
+trait ReplyWatchUi: ReplyPollRenderer {
+    fn poll_actions(&mut self, timeout: Duration) -> Result<Option<Vec<ReplyTerminalAction>>>;
+    fn scroll(&mut self, delta: ScrollDelta) -> Result<()>;
+    fn restore_draft(&mut self, draft: &str) -> Result<()>;
 }
 
 /// Apply already-decoded terminal events without performing terminal I/O.
@@ -433,6 +466,21 @@ impl ReplyPollRenderer for ReplyTerminal {
     }
 }
 
+impl ReplyWatchUi for ReplyTerminal {
+    fn poll_actions(&mut self, timeout: Duration) -> Result<Option<Vec<ReplyTerminalAction>>> {
+        ReplyTerminal::poll_actions(self, timeout)
+    }
+
+    fn scroll(&mut self, delta: ScrollDelta) -> Result<()> {
+        ReplyTerminal::scroll(self, delta)
+    }
+
+    fn restore_draft(&mut self, draft: &str) -> Result<()> {
+        self.state.paste(draft);
+        self.render_input()
+    }
+}
+
 impl ReplyPollRenderer for ReplyUiState {
     fn render_system(&mut self, line: String) -> Result<()> {
         self.push_line(line);
@@ -441,6 +489,23 @@ impl ReplyPollRenderer for ReplyUiState {
 
     fn render_chat(&mut self, entry: ChatEntry) -> Result<()> {
         self.push_chat(entry);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl ReplyWatchUi for ReplyUiState {
+    fn poll_actions(&mut self, _timeout: Duration) -> Result<Option<Vec<ReplyTerminalAction>>> {
+        Ok(None)
+    }
+
+    fn scroll(&mut self, delta: ScrollDelta) -> Result<()> {
+        ReplyUiState::scroll(self, delta, 20);
+        Ok(())
+    }
+
+    fn restore_draft(&mut self, draft: &str) -> Result<()> {
+        self.paste(draft);
         Ok(())
     }
 }
@@ -763,6 +828,8 @@ fn run_watch(
         );
     }
     let mut reply_terminal: Option<ReplyTerminal> = None;
+    let mut reply_send_state = ReplySendState::new();
+    let mut reply_sender = spawn_reply_send;
 
     if format == WatchOutputFormat::Jsonl {
         print_jsonl_event(
@@ -926,7 +993,14 @@ fn run_watch(
         }
 
         if let Some(terminal) = reply_terminal.as_mut() {
-            if process_pending_reply_events(terminal, chat.as_deref(), reply_no_open, data_dir)? {
+            if process_pending_reply_events(
+                terminal,
+                chat.as_deref(),
+                reply_no_open,
+                data_dir,
+                &mut reply_send_state,
+                &mut reply_sender,
+            )? {
                 break;
             }
         }
@@ -942,6 +1016,8 @@ fn run_watch(
                 reply_no_open,
                 data_dir,
                 remaining,
+                &mut reply_send_state,
+                &mut reply_sender,
             )? {
                 break;
             }
@@ -1160,6 +1236,31 @@ fn pump_reply_watch(
     data_dir: &Path,
     max_polls: Option<u64>,
 ) -> Result<()> {
+    pump_reply_watch_with_sender(
+        terminal,
+        outcome_rx,
+        chat_id,
+        no_open,
+        data_dir,
+        max_polls,
+        &mut spawn_reply_send,
+    )
+}
+
+fn pump_reply_watch_with_sender<Ui, StartSend>(
+    terminal: &mut Ui,
+    outcome_rx: &Receiver<ReplyPollOutcome>,
+    chat_id: Option<&str>,
+    no_open: bool,
+    data_dir: &Path,
+    max_polls: Option<u64>,
+    start_send: &mut StartSend,
+) -> Result<()>
+where
+    Ui: ReplyWatchUi,
+    StartSend: FnMut(ReplySendRequest),
+{
+    let mut send_state = ReplySendState::new();
     loop {
         let outcome = match outcome_rx.recv_timeout(REPLY_PUMP_SLICE) {
             Ok(outcome) => Some(outcome),
@@ -1167,7 +1268,15 @@ fn pump_reply_watch(
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         };
 
-        if process_pending_reply_events(terminal, chat_id, no_open, data_dir)? {
+        drain_reply_send_outcomes(terminal, &mut send_state)?;
+        if process_pending_reply_events(
+            terminal,
+            chat_id,
+            no_open,
+            data_dir,
+            &mut send_state,
+            start_send,
+        )? {
             return Ok(());
         }
 
@@ -1342,15 +1451,23 @@ fn print_jsonl_event(stdout: &mut impl Write, event: &WatchEvent) -> Result<()> 
     Ok(())
 }
 
-fn process_pending_reply_events(
-    terminal: &mut ReplyTerminal,
+fn process_pending_reply_events<Ui, StartSend>(
+    terminal: &mut Ui,
     chat_id: Option<&str>,
     no_open: bool,
     data_dir: &Path,
-) -> Result<bool> {
+    send_state: &mut ReplySendState,
+    start_send: &mut StartSend,
+) -> Result<bool>
+where
+    Ui: ReplyWatchUi,
+    StartSend: FnMut(ReplySendRequest),
+{
     while let Some(actions) = terminal.poll_actions(Duration::ZERO)? {
         for action in actions {
-            if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
+            if process_reply_action(
+                terminal, action, chat_id, no_open, data_dir, send_state, start_send,
+            )? {
                 return Ok(true);
             }
         }
@@ -1358,15 +1475,21 @@ fn process_pending_reply_events(
     Ok(false)
 }
 
-fn process_reply_action(
-    terminal: &mut ReplyTerminal,
+fn process_reply_action<Ui, StartSend>(
+    terminal: &mut Ui,
     action: ReplyTerminalAction,
     chat_id: Option<&str>,
     no_open: bool,
     data_dir: &Path,
-) -> Result<bool> {
+    send_state: &mut ReplySendState,
+    start_send: &mut StartSend,
+) -> Result<bool>
+where
+    Ui: ReplyWatchUi,
+    StartSend: FnMut(ReplySendRequest),
+{
     let line = match action {
-        ReplyTerminalAction::Quit => return Ok(true),
+        ReplyTerminalAction::Quit => return finish_reply_quit(terminal, send_state),
         ReplyTerminalAction::Scroll(delta) => {
             terminal.scroll(delta)?;
             return Ok(false);
@@ -1375,42 +1498,101 @@ fn process_reply_action(
     };
     match parse_reply_command(1, &line) {
         ReplyCommand::Send(body) => {
-            let chat_id = chat_id.context("watch --reply has no selected chat")?;
-            match send_reply_to_chat(chat_id, &body, no_open, data_dir) {
-                Ok(chars) => terminal.push_line(format!("katok: sent reply ({chars} chars)"))?,
-                Err(err) => terminal.push_line(format!("katok: send failed: {err:#}"))?,
+            if send_state.in_flight {
+                terminal.restore_draft(&line)?;
+                terminal.render_system(
+                    "katok: 이전 전송이 끝나기를 기다리는 중입니다".to_string(),
+                )?;
+                return Ok(false);
             }
+            let chat_id = chat_id.context("watch --reply has no selected chat")?;
+            terminal.render_system("katok: 전송 중…".to_string())?;
+            send_state.in_flight = true;
+            start_send(ReplySendRequest {
+                chat_id: chat_id.to_string(),
+                body,
+                no_open,
+                data_dir: data_dir.to_path_buf(),
+                outcome_tx: send_state.outcome_tx.clone(),
+            });
         }
-        ReplyCommand::Quit => return Ok(true),
-        ReplyCommand::Help => terminal.push_line(
-            "katok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit",
+        ReplyCommand::Quit => return finish_reply_quit(terminal, send_state),
+        ReplyCommand::Help => terminal.render_system(
+            "katok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit".to_string(),
         )?,
         ReplyCommand::Empty => {}
-        ReplyCommand::Ignored => terminal.push_line("katok: not sent; unknown slash command")?,
+        ReplyCommand::Ignored => terminal
+            .render_system("katok: not sent; unknown slash command".to_string())?,
     }
     Ok(false)
+}
+
+fn finish_reply_quit(
+    terminal: &mut impl ReplyPollRenderer,
+    send_state: &ReplySendState,
+) -> Result<bool> {
+    if send_state.in_flight {
+        terminal.render_system("katok: 전송은 백그라운드에서 계속됩니다".to_string())?;
+    }
+    Ok(true)
+}
+
+fn drain_reply_send_outcomes(
+    terminal: &mut impl ReplyPollRenderer,
+    send_state: &mut ReplySendState,
+) -> Result<()> {
+    while let Ok(outcome) = send_state.outcome_rx.try_recv() {
+        send_state.in_flight = false;
+        match outcome {
+            Ok(chars) => {
+                terminal.render_system(format!("katok: sent reply ({chars} chars)"))?;
+            }
+            Err(err) => terminal.render_system(format!("katok: send failed: {err:#}"))?,
+        }
+    }
+    Ok(())
+}
+
+fn spawn_reply_send(request: ReplySendRequest) {
+    thread::spawn(move || {
+        let outcome = send_reply_to_chat(
+            &request.chat_id,
+            &request.body,
+            request.no_open,
+            &request.data_dir,
+        );
+        let _ = request.outcome_tx.send(outcome);
+    });
 }
 
 fn remaining_poll_delay(deadline: Instant, now: Instant) -> Duration {
     deadline.saturating_duration_since(now)
 }
 
-fn wait_for_next_poll_with_reply(
+fn wait_for_next_poll_with_reply<StartSend>(
     terminal: &mut ReplyTerminal,
     chat_id: Option<&str>,
     no_open: bool,
     data_dir: &Path,
     poll_interval: Duration,
-) -> Result<bool> {
+    send_state: &mut ReplySendState,
+    start_send: &mut StartSend,
+) -> Result<bool>
+where
+    StartSend: FnMut(ReplySendRequest),
+{
     let deadline = Instant::now() + poll_interval;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Ok(false);
         }
+        drain_reply_send_outcomes(terminal, send_state)?;
         if let Some(actions) = terminal.poll_actions(remaining.min(Duration::from_millis(250)))? {
             for action in actions {
-                if process_reply_action(terminal, action, chat_id, no_open, data_dir)? {
+                if process_reply_action(
+                    terminal, action, chat_id, no_open, data_dir, send_state, start_send,
+                )? {
                     return Ok(true);
                 }
             }
@@ -1459,6 +1641,9 @@ fn reply_send_args(chat_id: &str, no_open: bool, data_dir: &Path) -> Vec<OsStrin
     if no_open {
         args.push(OsString::from("--no-open"));
         args.push(OsString::from("--background-only"));
+    } else {
+        args.push(OsString::from("--focus-wait"));
+        args.push(OsString::from(REPLY_FOCUS_WAIT_SECS.to_string()));
     }
     args
 }
@@ -1782,9 +1967,11 @@ fn run_doctor(
 #[cfg(test)]
 mod reply_terminal_tests {
     use super::{
-        apply_reply_input_events, render_reply_poll_outcome, reply_poll_worker, reply_row_changed,
-        PollArchiveState, ReplyPollOutcome, ReplyPollWorkerOptions, ReplyRedraw,
-        ReplyTerminalAction,
+        apply_reply_input_events, drain_reply_send_outcomes, process_reply_action,
+        pump_reply_watch_with_sender, render_reply_poll_outcome, reply_poll_worker,
+        reply_row_changed, PollArchiveState, ReplyPollOutcome, ReplyPollRenderer,
+        ReplyPollWorkerOptions, ReplyRedraw, ReplySendRequest, ReplySendState, ReplyTerminalAction,
+        ReplyWatchUi,
     };
     use anyhow::anyhow;
     use chrono::{TimeZone, Utc};
@@ -1793,6 +1980,10 @@ mod reply_terminal_tests {
         types::RawMessage,
         watch::{ReplyRow, ReplyUiState, RowStyle, ScrollDelta},
     };
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+    use std::path::Path;
+    use std::rc::Rc;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -1828,6 +2019,231 @@ mod reply_terminal_tests {
             chat_id: Some("chat-synthetic-1".to_string()),
             selected_chat_name: Some("Synthetic Team".to_string()),
         }
+    }
+
+    fn system_lines(state: &mut ReplyUiState) -> Vec<String> {
+        state
+            .frame(120, 20)
+            .conversation
+            .into_iter()
+            .map(|row| row.text)
+            .collect()
+    }
+
+    #[test]
+    fn reply_send_status_precedes_channel_completion() {
+        let mut state = ReplyUiState::default();
+        let mut sends = ReplySendState::new();
+        let call_count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&call_count);
+        let mut sender = move |request: ReplySendRequest| {
+            counted.set(counted.get() + 1);
+            request.outcome_tx.send(Ok(2)).expect("return fake send");
+        };
+
+        let quit = process_reply_action(
+            &mut state,
+            ReplyTerminalAction::Submit("확인".to_string()),
+            Some("chat-synthetic-1"),
+            false,
+            Path::new("/tmp/katok-synthetic"),
+            &mut sends,
+            &mut sender,
+        )
+        .expect("start reply send");
+
+        assert!(!quit);
+        assert_eq!(call_count.get(), 1);
+        assert_eq!(system_lines(&mut state), ["katok: 전송 중…"]);
+
+        drain_reply_send_outcomes(&mut state, &mut sends).expect("render fake completion");
+        assert_eq!(
+            system_lines(&mut state),
+            ["katok: 전송 중…", "katok: sent reply (2 chars)"]
+        );
+    }
+
+    #[test]
+    fn reply_send_busy_keeps_draft_and_does_not_start_a_second_sender() {
+        let mut state = ReplyUiState::default();
+        let mut sends = ReplySendState::new();
+        let call_count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&call_count);
+        let mut sender = move |_request: ReplySendRequest| counted.set(counted.get() + 1);
+
+        process_reply_action(
+            &mut state,
+            ReplyTerminalAction::Submit("first".to_string()),
+            Some("chat-synthetic-1"),
+            false,
+            Path::new("/tmp/katok-synthetic"),
+            &mut sends,
+            &mut sender,
+        )
+        .expect("start first reply");
+        process_reply_action(
+            &mut state,
+            ReplyTerminalAction::Submit("둘째 초안".to_string()),
+            Some("chat-synthetic-1"),
+            false,
+            Path::new("/tmp/katok-synthetic"),
+            &mut sends,
+            &mut sender,
+        )
+        .expect("reject concurrent reply");
+
+        assert_eq!(call_count.get(), 1);
+        assert_eq!(state.draft(), "둘째 초안");
+        assert_eq!(
+            system_lines(&mut state),
+            [
+                "katok: 전송 중…",
+                "katok: 이전 전송이 끝나기를 기다리는 중입니다"
+            ]
+        );
+    }
+
+    #[test]
+    fn reply_send_error_allows_a_subsequent_send() {
+        let mut state = ReplyUiState::default();
+        let mut sends = ReplySendState::new();
+        let call_count = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&call_count);
+        let mut sender = move |request: ReplySendRequest| {
+            counted.set(counted.get() + 1);
+            if counted.get() == 1 {
+                request
+                    .outcome_tx
+                    .send(Err(anyhow!("synthetic send failure")))
+                    .expect("return fake failure");
+            }
+        };
+
+        process_reply_action(
+            &mut state,
+            ReplyTerminalAction::Submit("first".to_string()),
+            Some("chat-synthetic-1"),
+            false,
+            Path::new("/tmp/katok-synthetic"),
+            &mut sends,
+            &mut sender,
+        )
+        .expect("start failing reply");
+        drain_reply_send_outcomes(&mut state, &mut sends).expect("render fake failure");
+        process_reply_action(
+            &mut state,
+            ReplyTerminalAction::Submit("second".to_string()),
+            Some("chat-synthetic-1"),
+            false,
+            Path::new("/tmp/katok-synthetic"),
+            &mut sends,
+            &mut sender,
+        )
+        .expect("start subsequent reply");
+
+        assert_eq!(call_count.get(), 2);
+        assert!(system_lines(&mut state)
+            .iter()
+            .any(|line| line == "katok: send failed: synthetic send failure"));
+    }
+
+    struct ScriptedReplyUi {
+        state: ReplyUiState,
+        actions: VecDeque<Vec<ReplyTerminalAction>>,
+    }
+
+    impl ReplyPollRenderer for ScriptedReplyUi {
+        fn render_system(&mut self, line: String) -> anyhow::Result<()> {
+            self.state.push_system(line);
+            Ok(())
+        }
+
+        fn render_chat(&mut self, entry: katok::watch::ChatEntry) -> anyhow::Result<()> {
+            self.state.push_chat(entry);
+            Ok(())
+        }
+    }
+
+    impl ReplyWatchUi for ScriptedReplyUi {
+        fn poll_actions(
+            &mut self,
+            _timeout: Duration,
+        ) -> anyhow::Result<Option<Vec<ReplyTerminalAction>>> {
+            Ok(self.actions.pop_front())
+        }
+
+        fn scroll(&mut self, delta: ScrollDelta) -> anyhow::Result<()> {
+            self.state.scroll(delta, 20);
+            Ok(())
+        }
+
+        fn restore_draft(&mut self, draft: &str) -> anyhow::Result<()> {
+            self.state.paste(draft);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reply_pump_quits_without_joining_an_in_flight_sender() {
+        let mut ui = ScriptedReplyUi {
+            state: ReplyUiState::default(),
+            actions: VecDeque::from([vec![
+                ReplyTerminalAction::Submit("still sending".to_string()),
+                ReplyTerminalAction::Quit,
+            ]]),
+        };
+        let (poll_tx, poll_rx) = mpsc::channel();
+        poll_tx
+            .send(ReplyPollOutcome::Completed {
+                poll: 1,
+                events: vec![],
+                archive_changed: false,
+                observed_messages: 0,
+                observed_chats: 0,
+                emitted_messages: 0,
+                archived_messages: 0,
+                chunks: 0,
+                selected_chat_name: Some("Synthetic Team".to_string()),
+            })
+            .expect("seed pump outcome");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut release_rx = Some(release_rx);
+        let mut sender = move |request: ReplySendRequest| {
+            let entered_tx = entered_tx.clone();
+            let done_tx = done_tx.clone();
+            let release_rx = release_rx.take().expect("only one fake send");
+            std::thread::spawn(move || {
+                entered_tx.send(()).expect("signal fake sender");
+                release_rx.recv().expect("release fake sender");
+                let _ = request.outcome_tx.send(Ok(13));
+                done_tx.send(()).expect("signal fake sender done");
+            });
+        };
+
+        pump_reply_watch_with_sender(
+            &mut ui,
+            &poll_rx,
+            Some("chat-synthetic-1"),
+            false,
+            Path::new("/tmp/katok-synthetic"),
+            None,
+            &mut sender,
+        )
+        .expect("quit reply pump");
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fake sender started");
+        assert!(matches!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(system_lines(&mut ui.state)
+            .iter()
+            .any(|line| line == "katok: 전송은 백그라운드에서 계속됩니다"));
+        release_tx.send(()).expect("release fake sender");
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fake sender finished");
     }
 
     #[test]
@@ -2169,12 +2585,19 @@ mod tests {
         assert!(!default_args
             .iter()
             .any(|arg| arg.as_os_str() == OsStr::new("--background-only")));
+        assert!(default_args.windows(2).any(|args| {
+            args[0].as_os_str() == OsStr::new("--focus-wait")
+                && args[1].as_os_str() == OsStr::new("2")
+        }));
         assert!(no_open_args
             .iter()
             .any(|arg| arg.as_os_str() == OsStr::new("--no-open")));
         assert!(no_open_args
             .iter()
             .any(|arg| arg.as_os_str() == OsStr::new("--background-only")));
+        assert!(!no_open_args
+            .iter()
+            .any(|arg| arg.as_os_str() == OsStr::new("--focus-wait")));
     }
 }
 

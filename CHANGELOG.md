@@ -12,6 +12,8 @@
   readline-style movement and deletion keys.
 - Moved reply-mode source reads and archive synchronization to one background
   poll worker so typing and redraws remain responsive during slow database reads.
+- Moved reply sends to a single-flight background worker with live status lines,
+  and limited focus-taking reply sends to a two-second focus wait.
 
 ## 0.3.2 - 2026-08-12
 
