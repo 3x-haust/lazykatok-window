@@ -5,16 +5,17 @@
 //! running app's UI instead. It is deliberately the only module that touches AX.
 //!
 //! The message body is written straight into the compose box with `AXValue`, which needs no
-//! keyboard and no focus. Only the final Enter needs a key event, and that is delivered with
-//! `CGEventPostToPid` so it reaches KakaoTalk **without bringing the app forward**. Posting to
+//! keyboard and no focus. Newer KakaoTalk builds deliver neither on that write nor on a
+//! synthesized Return, so after the Enter attempts the send falls back to `AXPress` on the
+//! room window's Send button — still without focus, still without activation. Only the
+//! last-resort Enter path below needs `CGEventPostToPid` so it reaches KakaoTalk **without bringing the app forward**. Posting to
 //! the global HID tap instead would require activating KakaoTalk, stealing the user's screen and
 //! breaking whenever they click something mid-send.
 //!
-//! **Writing the compose box IS sending.** Setting `AXValue` on it does not
-//! stage text for a person to review — KakaoTalk delivers the message on the
-//! spot. The `Enter` below is therefore belt-and-braces, not the trigger. A
-//! draft mode cannot use this mechanism because writing the value has already
-//! crossed the send boundary.
+//! **Treat a compose-box write as a send.** On older KakaoTalk builds, setting `AXValue`
+//! delivers the message on the spot; newer web-backed builds only stage it until Enter or
+//! the Send button fires. A draft mode cannot use this mechanism because on those older
+//! builds writing the value has already crossed the send boundary.
 //!
 //! Scope: the target chat window should already be open. Locating an arbitrary
 //! room requires crawling the chat list or driving the search field, both of
@@ -74,6 +75,7 @@ const KEY_V: u16 = 9;
 const ATTR_WINDOWS: &str = "AXWindows";
 const ATTR_CHILDREN: &str = "AXChildren";
 const ATTR_TITLE: &str = "AXTitle";
+const ATTR_ENABLED: &str = "AXEnabled";
 const ATTR_ROLE: &str = "AXRole";
 const ATTR_VALUE: &str = "AXValue";
 
@@ -120,6 +122,9 @@ unsafe extern "C" {
     fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
     fn AXIsProcessTrusted() -> bool;
     fn AXValueGetValue(value: CFTypeRef, the_type: u32, out: *mut c_void) -> bool;
+    fn CFGetTypeID(cf: CFTypeRef) -> usize;
+    fn CFBooleanGetTypeID() -> usize;
+    fn CFBooleanGetValue(boolean: CFBooleanRef) -> bool;
 
     // Carbon Pasteboard Manager. Lives in the same framework already linked above, so writing
     // the clipboard costs no extra dependency (NSPasteboard would drag in AppKit bindings).
@@ -1879,6 +1884,14 @@ pub fn send_to_open_window(
         return Ok(());
     }
 
+    // Newer KakaoTalk compose areas deliver neither on the AXValue write nor on a synthesized
+    // Enter (the input is web-backed and ignores posted key events). The Send button still
+    // answers AXPress, which needs no focus and no activation, so it is tried next — this is
+    // still a non-activating route and stays available to background-only sends.
+    if press_send_button(window.as_raw()) && accepted(20) {
+        return Ok(());
+    }
+
     // This check is the no-visible-UI boundary. It precedes take_screen, which is the first
     // operation in this text path that can wait for focus, show the curtain, activate KakaoTalk,
     // raise the room, or post a global key. A background-only caller therefore cannot reach any
@@ -1907,6 +1920,39 @@ pub fn send_to_open_window(
         return Ok(());
     }
     Err(SendError::NotSent)
+}
+
+/// Press the room window's Send button (the AXButton titled "Send").
+///
+/// Returns `false` when no such button is found or it reports itself disabled, leaving the
+/// caller's error path untouched. Never activates KakaoTalk and never touches focus.
+fn press_send_button(window: AXUIElementRef) -> bool {
+    fn search(el: AXUIElementRef) -> bool {
+        if role_of(el) == ROLE_BUTTON && attr_string(el, ATTR_TITLE).as_deref() == Some("Send") {
+            if !attr_bool(el, ATTR_ENABLED).unwrap_or(true) {
+                return false;
+            }
+            let action = CFString::new(ACTION_PRESS);
+            return unsafe {
+                AXUIElementPerformAction(el, action.as_concrete_TypeRef()) == AX_SUCCESS
+            };
+        }
+        child_elements(el, ATTR_CHILDREN)
+            .iter()
+            .any(|child| search(child.as_raw()))
+    }
+    search(window)
+}
+
+fn attr_bool(el: AXUIElementRef, attribute: &str) -> Option<bool> {
+    let raw = copy_attr(el, attribute)?;
+    let value = if unsafe { CFGetTypeID(raw) == CFBooleanGetTypeID() } {
+        Some(unsafe { CFBooleanGetValue(raw as CFBooleanRef) })
+    } else {
+        None
+    };
+    unsafe { CFRelease(raw) };
+    value
 }
 
 /// Put UTF-8 `text` on the clipboard.
