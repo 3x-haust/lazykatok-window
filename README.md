@@ -273,7 +273,9 @@ katok watch --source macos --chat <chat-id> --poll-ms 1000
 katok watch --source fixture tests/fixtures/kakao/replies.jsonl --once --replay-existing
 ```
 
-사람이 터미널에서 직접 볼 때는 `--select`를 쓰십시오. 방 목록이 뜨면 번호나
+사람이 터미널에서 직접 볼 때는 `--select`를 쓰십시오. 방 목록은 마지막 메시지
+시각이 최신인 방부터 정렬되고, 시각을 알 수 없는 방은 이름 순으로 뒤에 놓입니다.
+목록이 뜨면 번호나
 `chat_id`를 입력하고, 선택한 방만 `[시간] 방 / 보낸 사람: 내용` 형식으로 표시합니다.
 `--select`는 기본 출력이 `text`입니다. 기계가 읽을 stream이 필요할 때만
 `--format jsonl`을 쓰면 됩니다. `--tail <N>`은 선택 직후 처음 보여줄 최근 메시지

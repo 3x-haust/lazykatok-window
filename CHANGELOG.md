@@ -14,6 +14,9 @@
   poll worker so typing and redraws remain responsive during slow database reads.
 - Moved reply sends to a single-flight background worker with live status lines,
   and limited focus-taking reply sends to a two-second focus wait.
+- Ordered the interactive `watch --select` room list by each chat's latest
+  message time (newest first, undated rooms after), with a stable name/id
+  tiebreak; `source chats` JSON now includes `last_message_at` when known.
 
 ## 0.3.2 - 2026-08-12
 

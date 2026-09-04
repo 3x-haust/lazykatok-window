@@ -1,5 +1,6 @@
 use crate::kakao::{AuthOptions, ReaderOutput};
 use crate::{types::RawMessage, Result};
+use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -13,6 +14,10 @@ pub struct ChatSummary {
     pub chat_id: String,
     pub chat_name: String,
     pub chat_type: String,
+    /// Latest message time the source can report; used to order chat lists by
+    /// recency. Sources without per-chat timestamps leave this None.
+    #[serde(default)]
+    pub last_message_at: Option<DateTime<Utc>>,
 }
 
 pub struct FixtureAdapter {
@@ -29,18 +34,23 @@ impl FixtureAdapter {
 
 impl SourceAdapter for FixtureAdapter {
     fn chats(&self) -> Result<Vec<ChatSummary>> {
-        let mut chats = self
-            .messages()?
-            .into_iter()
-            .map(|message| ChatSummary {
-                chat_id: message.chat_id,
-                chat_name: message.chat_name,
-                chat_type: message.chat_type,
-            })
-            .collect::<Vec<_>>();
-        chats.sort_by(|left, right| left.chat_id.cmp(&right.chat_id));
-        chats.dedup_by(|left, right| left.chat_id == right.chat_id);
-        Ok(chats)
+        let mut latest = std::collections::BTreeMap::new();
+        for message in self.messages()? {
+            latest
+                .entry(message.chat_id.clone())
+                .and_modify(|chat: &mut ChatSummary| {
+                    if Some(message.timestamp) > chat.last_message_at {
+                        chat.last_message_at = Some(message.timestamp);
+                    }
+                })
+                .or_insert_with(|| ChatSummary {
+                    chat_id: message.chat_id.clone(),
+                    chat_name: message.chat_name.clone(),
+                    chat_type: message.chat_type.clone(),
+                    last_message_at: Some(message.timestamp),
+                });
+        }
+        Ok(latest.into_values().collect())
     }
 
     fn messages(&self) -> Result<Vec<RawMessage>> {
@@ -84,13 +94,27 @@ impl MacosAdapter {
 impl SourceAdapter for MacosAdapter {
     fn chats(&self) -> Result<Vec<ChatSummary>> {
         let output = self.read()?;
+        let mut latest: std::collections::HashMap<String, DateTime<Utc>> =
+            std::collections::HashMap::new();
+        for message in &output.messages {
+            let entry = latest
+                .entry(message.chat_id.clone())
+                .or_insert(message.timestamp);
+            if message.timestamp > *entry {
+                *entry = message.timestamp;
+            }
+        }
         Ok(output
             .chats
             .into_iter()
-            .map(|chat| ChatSummary {
-                chat_id: chat.chat_id,
-                chat_name: chat.chat_name,
-                chat_type: chat.chat_type,
+            .map(|chat| {
+                let chat_id = chat.chat_id;
+                ChatSummary {
+                    last_message_at: latest.get(&chat_id).copied(),
+                    chat_id,
+                    chat_name: chat.chat_name,
+                    chat_type: chat.chat_type,
+                }
             })
             .collect())
     }
@@ -147,4 +171,56 @@ fn run_kakaocli(command: &str) -> Result<Vec<u8>> {
         )));
     }
     Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_line(chat_id: &str, message_id: &str, timestamp: &str) -> String {
+        format!(
+            "{{\"account_hash\":\"acct-synthetic\",\"chat_id\":\"{chat_id}\",\
+             \"chat_name\":\"Room {chat_id}\",\"chat_type\":\"group\",\
+             \"message_id\":\"{message_id}\",\"sender_id\":\"u1\",\
+             \"sender_nickname\":\"테스터\",\"timestamp\":\"{timestamp}\",\
+             \"text\":\"합성 메시지\",\"message_type\":\"text\",\
+             \"reply_to_message_id\":null}}\n"
+        )
+    }
+
+    #[test]
+    fn fixture_chats_carry_latest_message_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("chats.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{}{}{}{}",
+                fixture_line("chat-a", "a1", "2026-01-01T09:00:00Z"),
+                fixture_line("chat-b", "b1", "2026-01-01T10:00:00Z"),
+                fixture_line("chat-a", "a2", "2026-01-02T08:00:00Z"),
+                fixture_line("chat-b", "b2", "2026-01-01T09:30:00Z"),
+            ),
+        )
+        .expect("write fixture");
+
+        let chats = FixtureAdapter::new(&path).chats().expect("read chats");
+        fn instant(iso: &str) -> DateTime<Utc> {
+            chrono::DateTime::parse_from_rfc3339(iso)
+                .expect("parse timestamp")
+                .with_timezone(&Utc)
+        }
+        let mut seen = std::collections::BTreeMap::new();
+        for chat in chats {
+            seen.insert(chat.chat_id.clone(), chat.last_message_at);
+        }
+        assert_eq!(
+            seen.get("chat-a").copied().flatten(),
+            Some(instant("2026-01-02T08:00:00Z"))
+        );
+        assert_eq!(
+            seen.get("chat-b").copied().flatten(),
+            Some(instant("2026-01-01T10:00:00Z"))
+        );
+    }
 }

@@ -1368,6 +1368,19 @@ fn effective_watch_format(
     })
 }
 
+/// Order the interactive room list most-recent-first: chats the source can
+/// date by their latest message come before undated ones, ties break by name
+/// then id so the list is stable across runs.
+fn order_chats_for_selection(chats: &mut [ChatSummary]) {
+    chats.sort_by(|left, right| {
+        right
+            .last_message_at
+            .cmp(&left.last_message_at)
+            .then_with(|| left.chat_name.cmp(&right.chat_name))
+            .then_with(|| left.chat_id.cmp(&right.chat_id))
+    });
+}
+
 fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Result<ChatSummary> {
     eprintln!("katok: reading chat list from {source}...");
     let adapter = adapter_for_source(source, path, data_dir)?;
@@ -1375,11 +1388,7 @@ fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Re
     if chats.is_empty() {
         anyhow::bail!("no chats found in source");
     }
-    chats.sort_by(|left, right| {
-        left.chat_name
-            .cmp(&right.chat_name)
-            .then_with(|| left.chat_id.cmp(&right.chat_id))
-    });
+    order_chats_for_selection(&mut chats);
 
     let mut stderr = io::stderr().lock();
     writeln!(stderr, "Choose a chat to watch:").context("write chat selection prompt")?;
@@ -1962,6 +1971,47 @@ fn run_doctor(
         }
     });
     print_payload(json, &payload)
+}
+
+#[cfg(test)]
+mod chat_selection_tests {
+    use super::*;
+
+    fn summary(id: &str, name: &str, at: Option<&str>) -> ChatSummary {
+        ChatSummary {
+            chat_id: id.to_string(),
+            chat_name: name.to_string(),
+            chat_type: "group".to_string(),
+            last_message_at: at.map(|iso| {
+                chrono::DateTime::parse_from_rfc3339(iso)
+                    .expect("parse timestamp")
+                    .with_timezone(&chrono::Utc)
+            }),
+        }
+    }
+
+    #[test]
+    fn selection_orders_latest_first_and_undated_last() {
+        let mut chats = vec![
+            summary("chat-none", "Undated", None),
+            summary("chat-old", "Older", Some("2026-01-01T09:00:00Z")),
+            summary("chat-new", "Newest", Some("2026-01-03T09:00:00Z")),
+            summary("chat-mid", "Middle", Some("2026-01-02T09:00:00Z")),
+        ];
+        order_chats_for_selection(&mut chats);
+        let ids: Vec<_> = chats.iter().map(|chat| chat.chat_id.as_str()).collect();
+        assert_eq!(ids, ["chat-new", "chat-mid", "chat-old", "chat-none"]);
+    }
+
+    #[test]
+    fn selection_ties_break_by_name_then_id() {
+        let mut chats = vec![
+            summary("chat-b", "Same Room", Some("2026-01-01T09:00:00Z")),
+            summary("chat-a", "Same Room", Some("2026-01-01T09:00:00Z")),
+        ];
+        order_chats_for_selection(&mut chats);
+        assert_eq!(chats[0].chat_id, "chat-a");
+    }
 }
 
 #[cfg(test)]
