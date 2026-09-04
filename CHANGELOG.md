@@ -5,8 +5,7 @@
 ### Reply TUI
 
 - Redesigned `watch --reply` with compact local timestamps, Unicode-width sender
-  columns, consecutive-message grouping, day separators, stable sender colors,
-  and a monochrome `NO_COLOR` mode.
+  columns, consecutive-message grouping, and day separators.
 - Added cached visible-window layout, row-diff terminal updates, conversation
   paging with an unread marker, and a cursor-aware single-line editor with
   readline-style movement and deletion keys.

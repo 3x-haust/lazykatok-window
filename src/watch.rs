@@ -73,7 +73,6 @@ pub enum HistoryEntry {
 pub enum RowStyle {
     Plain,
     Dim,
-    MessagePrefix { columns: u16, palette: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -493,11 +492,10 @@ fn wrap_history_entry(stored: &StoredEntry, width: usize) -> WrappedEntry {
 
 fn wrap_chat(chat: &ChatEntry, grouped: bool, width: usize) -> Vec<ReplyRow> {
     let time = chat.timestamp.with_timezone(&Local).format("%H:%M");
-    let palette = sender_palette(&chat.sender);
-    let (prefix, columns) = if width < 24 {
+    let prefix = if width < 24 {
         let sender = if grouped { "·" } else { &chat.sender };
         let delimiter = if grouped { " " } else { ": " };
-        (format!("{time} {sender}{delimiter}"), 0)
+        format!("{time} {sender}{delimiter}")
     } else {
         let sender_width = if width < 40 { width / 3 } else { 12 };
         let sender = if grouped {
@@ -505,20 +503,12 @@ fn wrap_chat(chat: &ChatEntry, grouped: bool, width: usize) -> Vec<ReplyRow> {
         } else {
             pad_display(&chat.sender, sender_width)
         };
-        let prefix = format!("{time} {sender} ");
-        let columns = UnicodeWidthStr::width(prefix.as_str()) as u16;
-        (prefix, columns)
+        format!("{time} {sender} ")
     };
-    wrap_prefixed(&prefix, &chat.text, width, columns, palette)
+    wrap_prefixed(&prefix, &chat.text, width)
 }
 
-fn wrap_prefixed(
-    prefix: &str,
-    body: &str,
-    width: usize,
-    columns: u16,
-    palette: u8,
-) -> Vec<ReplyRow> {
+fn wrap_prefixed(prefix: &str, body: &str, width: usize) -> Vec<ReplyRow> {
     let prefix_width = UnicodeWidthStr::width(prefix);
     if prefix_width >= width {
         return wrap_display_line(&format!("{prefix}{body}"), width)
@@ -540,11 +530,7 @@ fn wrap_prefixed(
             } else {
                 format!("{}{text}", " ".repeat(prefix_width))
             },
-            style: if index == 0 {
-                RowStyle::MessagePrefix { columns, palette }
-            } else {
-                RowStyle::Plain
-            },
+            style: RowStyle::Plain,
         })
         .collect()
 }
@@ -598,15 +584,6 @@ fn pad_display(value: &str, width: usize) -> String {
     let shortened_width = UnicodeWidthStr::width(shortened.as_str());
     shortened.push_str(&" ".repeat(width.saturating_sub(shortened_width)));
     shortened
-}
-
-fn sender_palette(sender: &str) -> u8 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in sender.to_lowercase().bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    (hash % 8) as u8
 }
 
 fn char_width(character: char) -> usize {

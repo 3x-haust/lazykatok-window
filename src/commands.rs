@@ -9,7 +9,7 @@ use crossterm::{
         KeyModifiers,
     },
     execute, queue,
-    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
+    style::{Attribute, Print, SetAttribute},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use katok::{
@@ -36,7 +36,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
-use unicode_width::UnicodeWidthChar;
 
 #[cfg(all(target_os = "macos", feature = "private-send"))]
 use std::ffi::OsString;
@@ -273,7 +272,6 @@ struct ReplyTerminal {
     full_invalidate: bool,
     width: u16,
     height: u16,
-    color_enabled: bool,
     active: bool,
 }
 
@@ -287,7 +285,6 @@ impl ReplyTerminal {
             full_invalidate: true,
             width: 0,
             height: 0,
-            color_enabled: std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
             active: true,
         };
         execute!(
@@ -430,8 +427,7 @@ impl ReplyTerminal {
                     Clear(ClearType::CurrentLine)
                 )
                 .context("clear changed reply row")?;
-                queue_styled_row(&mut self.output, row, self.color_enabled)
-                    .context("draw changed reply row")?;
+                queue_styled_row(&mut self.output, row).context("draw changed reply row")?;
             }
         }
         for index in rows.len()..self.previous_rows.len() {
@@ -514,11 +510,7 @@ fn reply_row_changed(previous: Option<&(String, RowStyle)>, row: &ReplyRow) -> b
     previous.is_none_or(|previous| previous.0 != row.text || previous.1 != row.style)
 }
 
-fn queue_styled_row(
-    output: &mut impl Write,
-    row: &ReplyRow,
-    color_enabled: bool,
-) -> io::Result<()> {
+fn queue_styled_row(output: &mut impl Write, row: &ReplyRow) -> io::Result<()> {
     match row.style {
         RowStyle::Plain => queue!(output, Print(&row.text))?,
         RowStyle::Dim => {
@@ -529,42 +521,8 @@ fn queue_styled_row(
                 SetAttribute(Attribute::Reset)
             )?;
         }
-        RowStyle::MessagePrefix { columns, palette } if color_enabled && columns > 0 => {
-            let split = display_column_byte_index(&row.text, columns as usize);
-            let (prefix, body) = row.text.split_at(split);
-            const PALETTE: [Color; 8] = [
-                Color::Blue,
-                Color::Cyan,
-                Color::Green,
-                Color::Yellow,
-                Color::Magenta,
-                Color::Red,
-                Color::DarkCyan,
-                Color::DarkGreen,
-            ];
-            queue!(
-                output,
-                SetForegroundColor(PALETTE[palette as usize % PALETTE.len()]),
-                Print(prefix),
-                ResetColor,
-                Print(body)
-            )?;
-        }
-        RowStyle::MessagePrefix { .. } => queue!(output, Print(&row.text))?,
     }
     Ok(())
-}
-
-fn display_column_byte_index(value: &str, columns: usize) -> usize {
-    let mut width = 0;
-    for (byte, character) in value.char_indices() {
-        let next = width + UnicodeWidthChar::width(character).unwrap_or(0);
-        if next > columns {
-            return byte;
-        }
-        width = next;
-    }
-    value.len()
 }
 
 impl Drop for ReplyTerminal {
