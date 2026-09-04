@@ -33,6 +33,7 @@ use katok::{
 };
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthChar;
@@ -73,6 +74,47 @@ struct ReplyInputBatch {
 const REPLY_INPUT_BURST_GRACE: Duration = Duration::from_millis(2);
 const REPLY_INPUT_BATCH_LIMIT: Duration = Duration::from_millis(8);
 const REPLY_INPUT_EVENT_LIMIT: usize = 256;
+const REPLY_PUMP_SLICE: Duration = Duration::from_millis(16);
+
+#[derive(Debug)]
+enum ReplyPollOutcome {
+    Completed {
+        poll: u64,
+        events: Vec<WatchEvent>,
+        archive_changed: bool,
+        observed_messages: usize,
+        observed_chats: usize,
+        emitted_messages: usize,
+        archived_messages: usize,
+        chunks: usize,
+        selected_chat_name: Option<String>,
+    },
+    Error {
+        poll: u64,
+        error: anyhow::Error,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PollArchiveState {
+    archive_changed: bool,
+    archived_messages: usize,
+    chunks: usize,
+}
+
+struct ReplyPollWorkerOptions {
+    poll_interval: Duration,
+    max_polls: Option<u64>,
+    replay_existing: bool,
+    tail: usize,
+    chat_id: Option<String>,
+    selected_chat_name: Option<String>,
+}
+
+trait ReplyPollRenderer {
+    fn render_system(&mut self, line: String) -> Result<()>;
+    fn render_chat(&mut self, entry: ChatEntry) -> Result<()>;
+}
 
 /// Apply already-decoded terminal events without performing terminal I/O.
 ///
@@ -381,6 +423,28 @@ impl ReplyTerminal {
     }
 }
 
+impl ReplyPollRenderer for ReplyTerminal {
+    fn render_system(&mut self, line: String) -> Result<()> {
+        self.push_line(line)
+    }
+
+    fn render_chat(&mut self, entry: ChatEntry) -> Result<()> {
+        self.push_chat(entry)
+    }
+}
+
+impl ReplyPollRenderer for ReplyUiState {
+    fn render_system(&mut self, line: String) -> Result<()> {
+        self.push_line(line);
+        Ok(())
+    }
+
+    fn render_chat(&mut self, entry: ChatEntry) -> Result<()> {
+        self.push_chat(entry);
+        Ok(())
+    }
+}
+
 fn reply_row_changed(previous: Option<&(String, RowStyle)>, row: &ReplyRow) -> bool {
     previous.is_none_or(|previous| previous.0 != row.text || previous.1 != row.style)
 }
@@ -682,16 +746,23 @@ fn run_watch(
         chat = Some(selected.chat_id);
     }
 
-    let mut reply_terminal = if reply {
-        let mut terminal = ReplyTerminal::new()?;
-        terminal.push_line("katok: starting terminal watch; press Ctrl-C to stop")?;
-        terminal.push_line(
-            "katok: reply mode enabled; type a message and press Enter to send, /help for commands, /quit to stop",
-        )?;
-        Some(terminal)
-    } else {
-        None
-    };
+    if reply {
+        return run_watch_with_reply(
+            source,
+            path,
+            chat,
+            selected_chat_name,
+            tail,
+            poll_interval,
+            max_polls,
+            replay_existing,
+            reply_no_open,
+            config,
+            archive_path,
+            data_dir,
+        );
+    }
+    let mut reply_terminal: Option<ReplyTerminal> = None;
 
     if format == WatchOutputFormat::Jsonl {
         print_jsonl_event(
@@ -879,6 +950,301 @@ fn run_watch(
         }
     }
 
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_watch_with_reply(
+    source: String,
+    path: Option<PathBuf>,
+    chat_id: Option<String>,
+    selected_chat_name: Option<String>,
+    tail: u64,
+    poll_interval: Duration,
+    max_polls: Option<u64>,
+    replay_existing: bool,
+    reply_no_open: bool,
+    config: &KatokConfig,
+    archive_path: &Path,
+    data_dir: &Path,
+) -> Result<()> {
+    let mut terminal = ReplyTerminal::new()?;
+    terminal.push_line("katok: starting terminal watch; press Ctrl-C to stop")?;
+    terminal.push_line(
+        "katok: reply mode enabled; type a message and press Enter to send, /help for commands, /quit to stop",
+    )?;
+
+    let (outcome_tx, outcome_rx) = mpsc::channel();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let options = ReplyPollWorkerOptions {
+        poll_interval,
+        max_polls,
+        replay_existing,
+        tail: tail as usize,
+        chat_id: chat_id.clone(),
+        selected_chat_name,
+    };
+    let read_source_name = source.clone();
+    let read_data_dir = data_dir.to_path_buf();
+    let sync_source_name = source.clone();
+    let sync_config = config.clone();
+    let sync_archive_path = archive_path.to_path_buf();
+    let sync_data_dir = data_dir.to_path_buf();
+    let freshness_source_name = source;
+    let freshness_data_dir = data_dir.to_path_buf();
+    let worker = thread::spawn(move || {
+        reply_poll_worker(
+            options,
+            outcome_tx,
+            stop_rx,
+            move || {
+                // A new adapter per pass is required because the macOS adapter memoizes its read.
+                let adapter = adapter_for_source(&read_source_name, path.clone(), &read_data_dir)?;
+                Ok(adapter.messages()?)
+            },
+            move |messages, read_source| {
+                let report = sync_watch_messages(
+                    messages,
+                    read_source,
+                    &sync_source_name,
+                    &sync_config,
+                    &sync_archive_path,
+                    &sync_data_dir,
+                )?;
+                Ok(PollArchiveState {
+                    archive_changed: report.inserted_messages > 0 || report.updated_messages > 0,
+                    archived_messages: report.total_messages,
+                    chunks: report.chunks,
+                })
+            },
+            move |archived_messages, chunks| {
+                freshness::record_sync(
+                    &freshness_data_dir,
+                    &freshness_source_name,
+                    archived_messages,
+                    chunks,
+                )
+            },
+        );
+    });
+
+    let ui_result = pump_reply_watch(
+        &mut terminal,
+        &outcome_rx,
+        chat_id.as_deref(),
+        reply_no_open,
+        data_dir,
+        max_polls,
+    );
+    drop(stop_tx);
+    // Shutdown can wait for an in-flight source read; the worker never touches terminal state.
+    let join_result = worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("watch poll worker panicked"));
+    join_result?;
+    ui_result
+}
+
+fn reply_poll_worker<ReadSource, SyncMessages, RecordFreshness>(
+    options: ReplyPollWorkerOptions,
+    outcome_tx: Sender<ReplyPollOutcome>,
+    stop_rx: Receiver<()>,
+    mut read_source: ReadSource,
+    mut sync_messages: SyncMessages,
+    mut record_freshness: RecordFreshness,
+) where
+    ReadSource: FnMut() -> Result<Vec<RawMessage>> + Send,
+    SyncMessages: FnMut(&[RawMessage], u128) -> Result<PollArchiveState> + Send,
+    RecordFreshness: FnMut(usize, usize) -> Result<()> + Send,
+{
+    let mut snapshot = WatchSnapshot::default();
+    let mut archive_counts = None;
+    let mut selected_chat_name = options.selected_chat_name;
+    let mut poll = 0u64;
+
+    loop {
+        poll += 1;
+        let poll_started = Instant::now();
+        let next_poll_at = poll_started + options.poll_interval;
+        let messages = match read_source().context("read source messages") {
+            Ok(messages) => messages,
+            Err(error) => {
+                let _ = outcome_tx.send(ReplyPollOutcome::Error { poll, error });
+                return;
+            }
+        };
+        if matches!(
+            stop_rx.try_recv(),
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected)
+        ) {
+            return;
+        }
+        let read_source = poll_started.elapsed().as_millis();
+        if selected_chat_name.is_none() {
+            selected_chat_name = options
+                .chat_id
+                .as_deref()
+                .and_then(|chat_id| find_chat_name(&messages, chat_id));
+        }
+        let events = snapshot.diff(
+            &messages,
+            poll,
+            options.replay_existing || options.chat_id.is_some(),
+            options.chat_id.as_deref(),
+        );
+        let events = if poll == 1 {
+            tail_events(events, options.tail)
+        } else {
+            events
+        };
+        let emitted_messages = events.len();
+        let archive_state = if snapshot.source_changed() {
+            match sync_messages(&messages, read_source).context("sync watched messages") {
+                Ok(state) => {
+                    archive_counts = Some((state.archived_messages, state.chunks));
+                    state
+                }
+                Err(error) => {
+                    let _ = outcome_tx.send(ReplyPollOutcome::Error { poll, error });
+                    return;
+                }
+            }
+        } else {
+            let Some((archived_messages, chunks)) = archive_counts else {
+                let error = anyhow::anyhow!(
+                    "watch archive counts missing after the initial source snapshot"
+                );
+                let _ = outcome_tx.send(ReplyPollOutcome::Error { poll, error });
+                return;
+            };
+            if let Err(error) = record_freshness(archived_messages, chunks) {
+                let _ = outcome_tx.send(ReplyPollOutcome::Error { poll, error });
+                return;
+            }
+            PollArchiveState {
+                archive_changed: false,
+                archived_messages,
+                chunks,
+            }
+        };
+        let outcome = ReplyPollOutcome::Completed {
+            poll,
+            events,
+            archive_changed: archive_state.archive_changed,
+            observed_messages: messages.len(),
+            observed_chats: chat_count(&messages),
+            emitted_messages,
+            archived_messages: archive_state.archived_messages,
+            chunks: archive_state.chunks,
+            selected_chat_name: selected_chat_name.clone(),
+        };
+        if outcome_tx.send(outcome).is_err() {
+            return;
+        }
+        if options.max_polls.is_some_and(|limit| poll >= limit) {
+            return;
+        }
+        let remaining = remaining_poll_delay(next_poll_at, Instant::now());
+        match stop_rx.recv_timeout(remaining) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn pump_reply_watch(
+    terminal: &mut ReplyTerminal,
+    outcome_rx: &Receiver<ReplyPollOutcome>,
+    chat_id: Option<&str>,
+    no_open: bool,
+    data_dir: &Path,
+    max_polls: Option<u64>,
+) -> Result<()> {
+    loop {
+        let outcome = match outcome_rx.recv_timeout(REPLY_PUMP_SLICE) {
+            Ok(outcome) => Some(outcome),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+        };
+
+        if process_pending_reply_events(terminal, chat_id, no_open, data_dir)? {
+            return Ok(());
+        }
+
+        if let Some(outcome) = outcome {
+            render_reply_poll_outcome(terminal, &outcome)?;
+            match outcome {
+                ReplyPollOutcome::Completed { poll, .. }
+                    if max_polls.is_some_and(|limit| poll >= limit) =>
+                {
+                    return Ok(());
+                }
+                ReplyPollOutcome::Completed { .. } => {}
+                ReplyPollOutcome::Error { error, .. } => return Err(error),
+            }
+        }
+    }
+}
+
+fn render_reply_poll_outcome(
+    renderer: &mut impl ReplyPollRenderer,
+    outcome: &ReplyPollOutcome,
+) -> Result<()> {
+    match outcome {
+        ReplyPollOutcome::Completed {
+            poll,
+            events,
+            archive_changed,
+            observed_messages,
+            observed_chats,
+            emitted_messages,
+            archived_messages,
+            chunks,
+            selected_chat_name,
+        } => {
+            for event in events {
+                if let WatchEvent::Message {
+                    change, message, ..
+                } = event
+                {
+                    let sender = if message.sender_nickname.trim().is_empty() {
+                        message.sender_id.clone()
+                    } else {
+                        message.sender_nickname.clone()
+                    };
+                    let mut text = if message.text.trim().is_empty() {
+                        format!("<{}>", message.message_type)
+                    } else {
+                        message.text.clone()
+                    };
+                    if *change == WatchMessageChange::Updated {
+                        text.push_str(" (updated)");
+                    }
+                    renderer.render_chat(ChatEntry {
+                        timestamp: message.timestamp,
+                        sender,
+                        text,
+                    })?;
+                }
+            }
+            if *poll == 1 {
+                let label = selected_chat_name
+                    .as_deref()
+                    .map(sanitize_terminal_text)
+                    .unwrap_or_else(|| "selected chat".to_string());
+                renderer.render_system(format!(
+                    "katok: watching {label}; displayed {emitted_messages} recent message(s); observed {observed_messages} message(s) across {observed_chats} chat(s)"
+                ))?;
+                renderer.render_system(format!("katok: replies target {label}"))?;
+            }
+            // The protocol carries the complete poll state even though the reply UI currently
+            // prints only observed and emitted counts. Keep the other state available to the pump.
+            let _poll_state = (archive_changed, archived_messages, chunks);
+        }
+        ReplyPollOutcome::Error { poll, error } => {
+            renderer.render_system(format!("katok: watch poll {poll} failed: {error:#}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -1415,12 +1781,139 @@ fn run_doctor(
 
 #[cfg(test)]
 mod reply_terminal_tests {
-    use super::{apply_reply_input_events, reply_row_changed, ReplyRedraw, ReplyTerminalAction};
+    use super::{
+        apply_reply_input_events, render_reply_poll_outcome, reply_poll_worker, reply_row_changed,
+        PollArchiveState, ReplyPollOutcome, ReplyPollWorkerOptions, ReplyRedraw,
+        ReplyTerminalAction,
+    };
+    use anyhow::anyhow;
+    use chrono::{TimeZone, Utc};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use katok::watch::{ReplyRow, ReplyUiState, RowStyle, ScrollDelta};
+    use katok::{
+        types::RawMessage,
+        watch::{ReplyRow, ReplyUiState, RowStyle, ScrollDelta},
+    };
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn synthetic_message() -> RawMessage {
+        RawMessage {
+            account_hash: "account-synthetic".to_string(),
+            chat_id: "chat-synthetic-1".to_string(),
+            chat_name: "Synthetic Team".to_string(),
+            chat_type: "group".to_string(),
+            message_id: "message-synthetic-1".to_string(),
+            sender_id: "sender-synthetic-1".to_string(),
+            sender_nickname: "Synthetic Sender".to_string(),
+            timestamp: Utc
+                .with_ymd_and_hms(2026, 1, 1, 9, 0, 0)
+                .single()
+                .expect("valid timestamp"),
+            text: "Synthetic incoming message".to_string(),
+            message_type: "text".to_string(),
+            reply_to_message_id: None,
+        }
+    }
+
+    fn worker_options() -> ReplyPollWorkerOptions {
+        ReplyPollWorkerOptions {
+            poll_interval: Duration::from_secs(60),
+            max_polls: Some(1),
+            replay_existing: true,
+            tail: 50,
+            chat_id: Some("chat-synthetic-1".to_string()),
+            selected_chat_name: Some("Synthetic Team".to_string()),
+        }
+    }
+
+    #[test]
+    fn reply_pump_processes_input_while_worker_read_is_pending_then_renders_outcome() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let (_stop_tx, stop_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            reply_poll_worker(
+                worker_options(),
+                outcome_tx,
+                stop_rx,
+                move || {
+                    entered_tx.send(()).expect("signal entered read");
+                    release_rx.recv().expect("release fake read");
+                    Ok(vec![synthetic_message()])
+                },
+                |_, _| {
+                    Ok(PollArchiveState {
+                        archive_changed: true,
+                        archived_messages: 1,
+                        chunks: 1,
+                    })
+                },
+                |_, _| Ok(()),
+            );
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker entered fake read");
+        assert!(matches!(
+            outcome_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        let mut state = ReplyUiState::default();
+        let input =
+            apply_reply_input_events(&mut state, [key(KeyCode::Char('x'), KeyModifiers::NONE)]);
+        assert_eq!(input.redraw, ReplyRedraw::Input);
+        assert_eq!(state.frame(80, 8).input, "reply> x");
+
+        release_tx.send(()).expect("release worker read");
+        let outcome = outcome_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("receive completed poll");
+        render_reply_poll_outcome(&mut state, &outcome).expect("render poll outcome");
+
+        let frame = state.frame(80, 8);
+        assert_eq!(frame.input, "reply> x");
+        assert!(frame
+            .conversation
+            .iter()
+            .any(|row| row.text.contains("Synthetic incoming message")));
+        worker.join().expect("join fake worker");
+    }
+
+    #[test]
+    fn reply_worker_error_is_rendered_as_a_system_line() {
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let (_stop_tx, stop_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            reply_poll_worker(
+                worker_options(),
+                outcome_tx,
+                stop_rx,
+                || Err(anyhow!("synthetic read failure")),
+                |_, _| unreachable!("sync must not run after a read error"),
+                |_, _| unreachable!("freshness must not run after a read error"),
+            );
+        });
+
+        let outcome = outcome_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("receive worker error");
+        assert!(matches!(outcome, ReplyPollOutcome::Error { poll: 1, .. }));
+
+        let mut state = ReplyUiState::default();
+        render_reply_poll_outcome(&mut state, &outcome).expect("render worker error");
+        assert!(state
+            .frame(80, 8)
+            .conversation
+            .iter()
+            .any(|row| row.text.contains("synthetic read failure")));
+        worker.join().expect("join fake worker");
     }
 
     #[test]

@@ -10,6 +10,8 @@
 - Added cached visible-window layout, row-diff terminal updates, conversation
   paging with an unread marker, and a cursor-aware single-line editor with
   readline-style movement and deletion keys.
+- Moved reply-mode source reads and archive synchronization to one background
+  poll worker so typing and redraws remain responsive during slow database reads.
 
 ## 0.3.2 - 2026-08-12
 

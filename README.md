@@ -280,8 +280,10 @@ katok watch --source fixture tests/fixtures/kakao/replies.jsonl --once --replay-
 개수이며 기본값은 50개입니다. poll 완료 로그의 `observed`는 source 전체에서 읽은
 메시지 수이고, `displayed`는 그중 선택한 방에서 실제로 화면에 보여준 수입니다.
 
-같은 터미널에서 답장하려면 `--reply --accept-use-policy`를 같이 붙입니다. 화면은
-스크롤 가능한 대화 기록, 구분선, 고정된 `reply> ` 입력란, 단축키 footer로 나뉩니다.
+같은 터미널에서 답장하려면 `--reply --accept-use-policy`를 같이 붙입니다. source 읽기와
+archive 동기화는 background poll thread에서 실행되므로, 긴 poll 중에도 입력과 화면 갱신은
+계속 반응합니다. 화면은 스크롤 가능한 대화 기록, 구분선, 고정된 `reply> ` 입력란,
+단축키 footer로 나뉩니다.
 메시지는 로컬 시각 `HH:MM`, 12칸 보낸 사람 열로 표시되고 같은 사람이 5분 안에 보낸
 연속 메시지는 `·`로 묶입니다. 날짜가 바뀌면 날짜 구분선이 나타납니다. 새 메시지가
 도착해도 작성 중인 입력과 cursor는 그대로 유지되며, 과거 기록을 보는 중이면 viewport를
