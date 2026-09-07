@@ -112,18 +112,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="katok-${{ needs.validate.outputs.version }}-${{ matrix.target }}"
+          name="lazykatok-${{ needs.validate.outputs.version }}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
-          cp "target/${{ matrix.target }}/release/katok" "dist/${name}/katok"
+          cp "target/${{ matrix.target }}/release/lazykatok" "dist/${name}/lazykatok"
           cp README.md "dist/${name}/README.md"
-          cp scripts/katok-macos-setup.sh "dist/${name}/katok-macos-setup.sh"
+          cp scripts/lazykatok-macos-setup.sh "dist/${name}/lazykatok-macos-setup.sh"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           shasum -a 256 "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: katok-${{ matrix.target }}
+          name: lazykatok-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -168,8 +168,8 @@ jobs:
         run: |
           gh release create "${{ needs.validate.outputs.tag }}" dist/* \
             --repo "${{ github.repository }}" \
-            --title "katok ${{ needs.validate.outputs.version }}" \
-            --notes "Apple Silicon macOS KakaoTalk search CLI. Install with cargo install katok or brew tap NomaDamas/katok https://github.com/NomaDamas/katok.git && brew install katok."
+            --title "lazykatok ${{ needs.validate.outputs.version }}" \
+            --notes "LazyKatok: local-first KakaoTalk terminal client. Install with cargo install --git https://github.com/changeroa/lazykatok."
 
   update-homebrew:
     name: Update Homebrew tap
@@ -193,11 +193,11 @@ jobs:
           set -euo pipefail
           mkdir -p Formula
           revision="${GITHUB_SHA}"
-          cat > Formula/katok.rb <<RUBY
-          class Katok < Formula
+          cat > Formula/lazykatok.rb <<RUBY
+          class Lazykatok < Formula
             desc "Local KakaoTalk keyword, BM25, and vector search CLI for Apple Silicon macOS"
-            homepage "https://github.com/NomaDamas/katok"
-            url "https://github.com/NomaDamas/katok.git",
+            homepage "https://github.com/changeroa/lazykatok"
+            url "https://github.com/changeroa/lazykatok.git",
               tag:      "${TAG}",
               revision: "${revision}"
             license "MIT"
@@ -215,12 +215,12 @@ jobs:
                   System Settings > Privacy & Security > Full Disk Access
 
                 Then run:
-                  katok doctor --json
+                  lazykatok doctor --json
               EOS
             end
 
             test do
-              assert_match "katok", shell_output("#{bin}/katok --help")
+              assert_match "lazykatok", shell_output("#{bin}/lazykatok --help")
             end
           end
           RUBY
@@ -233,6 +233,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/katok.rb
-          git commit -m "feat(katok): update to ${TAG}" || exit 0
+          git add Formula/lazykatok.rb
+          git commit -m "feat(lazykatok): update to ${TAG}" || exit 0
           git push

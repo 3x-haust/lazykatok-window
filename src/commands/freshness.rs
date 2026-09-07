@@ -63,9 +63,9 @@ pub(crate) fn load(
     } else {
         FreshnessStatus::default()
     };
-    let committed_cursor = katok::semantic::committed_cursor(semantic_dir);
+    let committed_cursor = lazykatok::semantic::committed_cursor(semantic_dir);
     let committed_error = match &committed_cursor {
-        Err(katok::Error::SemanticIndexMissing) => None,
+        Err(lazykatok::Error::SemanticIndexMissing) => None,
         Err(error) => Some(error.to_string()),
         Ok(_) => None,
     };
@@ -99,7 +99,7 @@ pub(crate) fn record_sync(
 }
 
 fn save(data_dir: &Path, status: &FreshnessStatus) -> Result<()> {
-    katok::paths::ensure_private_dir(data_dir).context("create data directory")?;
+    lazykatok::paths::ensure_private_dir(data_dir).context("create data directory")?;
     let bytes = serde_json::to_vec_pretty(status).context("serialize freshness status")?;
     let path = status_path(data_dir);
     let temporary = data_dir.join(format!(".status.json.{}", std::process::id()));
@@ -144,8 +144,8 @@ fn recommendation(
             reason: "archive is missing; run katok sync --source macos --json, then katok index --json before search".to_string(),
         };
     }
-    let current_revision = katok::archive::Archive::open(archive_path)
-        .and_then(|archive| katok::semantic::archive_revision(&archive));
+    let current_revision = lazykatok::archive::Archive::open(archive_path)
+        .and_then(|archive| lazykatok::semantic::archive_revision(&archive));
     let committed_revision = status
         .last_index
         .as_ref()

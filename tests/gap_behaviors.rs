@@ -12,8 +12,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
     let replies = fixture_path("replies.jsonl");
     let malformed = fixture_path("malformed.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -28,8 +28,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
             "semantic index has never been synced",
         ));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -44,8 +44,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
         .stdout(predicate::str::contains("fixture parse error on line 2"))
         .stdout(predicate::str::contains("PRIVATE-MALFORMED-BODY").not());
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -59,8 +59,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
         .success()
         .stdout(predicate::str::contains("\"inserted_messages\": 3"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -74,8 +74,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
         .success()
         .stdout(predicate::str::contains("\"inserted_messages\": 0"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args(["--data-dir", data_dir, "index", "--json"])
         .assert()
@@ -83,8 +83,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
         .stdout(predicate::str::contains("\"vectorstore\": \"local\""))
         .stdout(predicate::str::contains("embeddinggemma/local-test"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "mock")
         .args(["--data-dir", data_dir, "index", "--json"])
         .assert()
@@ -93,15 +93,15 @@ fn cli_handles_plan_gap_edges_when_exercised() {
         .stdout(predicate::str::contains("window_"))
         .stdout(predicate::str::contains("embeddinggemma/local-test"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args(["--data-dir", data_dir, "search", "bm25", "", "--json"])
         .assert()
         .failure()
         .stdout(predicate::str::contains("empty query"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -114,8 +114,8 @@ fn cli_handles_plan_gap_edges_when_exercised() {
         .failure()
         .stdout(predicate::str::contains("chunk not found"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -137,8 +137,8 @@ fn cli_splits_group_gap_and_reports_doctor_checks_when_used() {
     let data_dir = dir.path().to_str().expect("utf8 path");
     let fixture = fixture_path("group_gap.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("HOME", dir.path())
         .args(["--data-dir", data_dir, "doctor", "--json"])
         .assert()
@@ -148,8 +148,8 @@ fn cli_splits_group_gap_and_reports_doctor_checks_when_used() {
         .stdout(predicate::str::contains("macos"))
         .stdout(predicate::str::contains("\"status\": \"not_checked\""));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,
@@ -163,8 +163,8 @@ fn cli_splits_group_gap_and_reports_doctor_checks_when_used() {
         .success()
         .stdout(predicate::str::contains("\"chunks\": 2"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir,

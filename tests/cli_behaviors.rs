@@ -1,5 +1,5 @@
 use assert_cmd::Command;
-use katok::archive::Archive;
+use lazykatok::archive::Archive;
 use predicates::prelude::*;
 
 fn fixture_path(name: &str) -> String {
@@ -16,7 +16,7 @@ fn parse_jsonl(bytes: &[u8]) -> Vec<serde_json::Value> {
 
 #[test]
 fn cli_help_identifies_katok_when_invoked() {
-    let mut cmd = Command::cargo_bin("katok").expect("katok binary");
+    let mut cmd = Command::cargo_bin("lazykatok").expect("lazykatok binary");
     cmd.arg("--help")
         .assert()
         .success()
@@ -26,15 +26,15 @@ fn cli_help_identifies_katok_when_invoked() {
 
 #[test]
 fn cli_default_build_exposes_send_with_policy_flag() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .arg("--help")
         .assert()
         .success()
         .stdout(predicate::str::contains("  send"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args(["send", "--help"])
         .assert()
         .success()
@@ -45,8 +45,8 @@ fn cli_default_build_exposes_send_with_policy_flag() {
 
 #[test]
 fn cli_background_only_requires_no_open_before_ui_access() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "send",
             "--room",
@@ -64,8 +64,8 @@ fn cli_background_only_requires_no_open_before_ui_access() {
 
 #[test]
 fn cli_send_requires_use_policy_acceptance_before_ui_access() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args(["send", "--room", "Synthetic QA Room"])
         .write_stdin("")
         .assert()
@@ -79,8 +79,8 @@ fn cli_send_requires_use_policy_acceptance_before_ui_access() {
 
 #[test]
 fn cli_acceptance_preserves_empty_message_refusal() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args(["send", "--room", "Synthetic QA Room", "--accept-use-policy"])
         .write_stdin("")
         .assert()
@@ -94,7 +94,7 @@ fn cli_acceptance_preserves_empty_message_refusal() {
 
 #[test]
 fn cli_media_get_help_documents_image_extraction_flags() {
-    let mut cmd = Command::cargo_bin("katok").expect("katok binary");
+    let mut cmd = Command::cargo_bin("lazykatok").expect("lazykatok binary");
     cmd.args(["media", "get", "--help"])
         .assert()
         .success()
@@ -108,7 +108,7 @@ fn cli_media_get_help_documents_image_extraction_flags() {
 
 #[test]
 fn cli_reports_macos_permission_panes_without_opening_settings_when_dry_run() {
-    let mut cmd = Command::cargo_bin("katok").expect("katok binary");
+    let mut cmd = Command::cargo_bin("lazykatok").expect("lazykatok binary");
     cmd.args([
         "permissions",
         "macos",
@@ -130,8 +130,8 @@ fn cli_indexes_and_searches_fixture_when_using_data_dir() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -145,8 +145,8 @@ fn cli_indexes_and_searches_fixture_when_using_data_dir() {
         .success()
         .stdout(predicate::str::contains("inserted_messages"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -159,8 +159,8 @@ fn cli_indexes_and_searches_fixture_when_using_data_dir() {
         .success()
         .stdout(predicate::str::contains("chunk_2aeac4db0a04ceb2"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -180,8 +180,8 @@ fn cli_watch_once_replays_fixture_as_jsonl_and_updates_archive() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    let output = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let output = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -238,8 +238,8 @@ fn cli_reports_semantic_index_states_when_embedder_is_local_test_or_mocked() {
         env!("CARGO_MANIFEST_DIR")
     );
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -254,8 +254,8 @@ fn cli_reports_semantic_index_states_when_embedder_is_local_test_or_mocked() {
             "semantic index has never been synced",
         ));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -268,8 +268,8 @@ fn cli_reports_semantic_index_states_when_embedder_is_local_test_or_mocked() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -282,8 +282,8 @@ fn cli_reports_semantic_index_states_when_embedder_is_local_test_or_mocked() {
         .stdout(predicate::str::contains("\"embedding_calls\": 0"))
         .stdout(predicate::str::contains("\"documents\""));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -297,8 +297,8 @@ fn cli_reports_semantic_index_states_when_embedder_is_local_test_or_mocked() {
             "\"embedder\": \"embeddinggemma/local-test\"",
         ));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "mock")
         .args([
             "--data-dir",
@@ -318,8 +318,8 @@ fn cli_index_counts_candidates_without_loading_chunk_bodies() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -345,8 +345,8 @@ fn cli_index_counts_candidates_without_loading_chunk_bodies() {
         .expect("make chunk body unreadable as utf8");
     drop(archive);
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -370,8 +370,8 @@ fn cli_lists_gap_chunks_and_applies_chunk_output_flags() {
         env!("CARGO_MANIFEST_DIR")
     );
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -384,8 +384,8 @@ fn cli_lists_gap_chunks_and_applies_chunk_output_flags() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -400,8 +400,8 @@ fn cli_lists_gap_chunks_and_applies_chunk_output_flags() {
         .stdout(predicate::str::contains("\"message_count\": 2"))
         .stdout(predicate::str::contains("\"message_count\": 1"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -421,8 +421,8 @@ fn cli_rejects_malformed_config_and_missing_kakaocli_without_private_dump() {
     let config_path = dir.path().join("bad-katok.toml");
     std::fs::write(&config_path, "chunk_gap_group_seconds = \"bad\"\n").expect("write config");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--config",
             config_path.to_str().expect("utf8 path"),
@@ -435,8 +435,8 @@ fn cli_rejects_malformed_config_and_missing_kakaocli_without_private_dump() {
 
     // Force kakaocli to be absent from PATH so the failure is deterministic
     // regardless of whether the host has kakaocli installed.
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("PATH", dir.path())
         .args(["source", "chats", "--source", "kakaocli", "--json"])
         .assert()
@@ -464,8 +464,8 @@ fn cli_search_limit_flag_caps_result_count() {
     }
     std::fs::write(&fixture, lines).expect("write fixture");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -479,8 +479,8 @@ fn cli_search_limit_flag_caps_result_count() {
         .success();
 
     let count_hits = |args: &[&str]| -> usize {
-        let output = Command::cargo_bin("katok")
-            .expect("katok binary")
+        let output = Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
             .args(args)
             .output()
             .expect("run search");
@@ -543,8 +543,8 @@ fn cli_resync_refreshes_existing_message_chat_name() {
     };
 
     let sync_fixture = || {
-        Command::cargo_bin("katok")
-            .expect("katok binary")
+        Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
             .args([
                 "--data-dir",
                 data_dir.to_str().expect("utf8 path"),
@@ -563,8 +563,8 @@ fn cli_resync_refreshes_existing_message_chat_name() {
     write_fixture("Alice, Bob");
     sync_fixture();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -581,8 +581,8 @@ fn cli_resync_refreshes_existing_message_chat_name() {
 
 #[test]
 fn cli_sync_help_documents_touched_flag() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args(["sync", "--help"])
         .assert()
         .success()
@@ -596,8 +596,8 @@ fn cli_sync_json_exposes_touched_chats_only_with_flag() {
 
     // Two fresh data dirs so both runs are first-sync and share the same structural counts.
     let without_dir = tempfile::tempdir().expect("create tempdir");
-    let without = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let without = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             without_dir.path().to_str().expect("utf8 path"),
@@ -622,8 +622,8 @@ fn cli_sync_json_exposes_touched_chats_only_with_flag() {
     );
 
     let with_dir = tempfile::tempdir().expect("create tempdir");
-    let with = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let with = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             with_dir.path().to_str().expect("utf8 path"),
@@ -691,8 +691,8 @@ fn cli_sync_json_exposes_touched_chats_only_with_flag() {
     );
 
     // Quiet re-sync with --touched still emits the key (empty array), so consumers can rely on it.
-    let quiet = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let quiet = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             with_dir.path().to_str().expect("utf8 path"),
@@ -721,8 +721,8 @@ fn cli_watch_once_establishes_quiet_baseline_and_syncs_archive() {
     let data_dir = dir.path().join("data");
     let fixture = fixture_path("replies.jsonl");
 
-    let output = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let output = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -765,8 +765,8 @@ fn cli_watch_replay_existing_emits_message_events_as_jsonl() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixture = fixture_path("replies.jsonl");
 
-    let output = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let output = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             dir.path().to_str().expect("utf8 path"),
@@ -811,8 +811,8 @@ fn cli_watch_text_format_prints_readable_chat_lines() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             dir.path().to_str().expect("utf8 path"),
@@ -832,7 +832,9 @@ fn cli_watch_text_format_prints_readable_chat_lines() {
             "[2026-01-01 09:00:00 UTC] Synthetic Team / 민지: 보고서 초안 올렸어요",
         ))
         .stdout(predicate::str::contains("\"type\"").not())
-        .stderr(predicate::str::contains("katok: watching Synthetic Team"));
+        .stderr(predicate::str::contains(
+            "lazykatok: watching Synthetic Team",
+        ));
 }
 
 #[test]
@@ -840,8 +842,8 @@ fn cli_watch_select_defaults_to_text_and_tails_the_selected_chat() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             dir.path().to_str().expect("utf8 path"),
@@ -868,8 +870,8 @@ fn cli_watch_select_defaults_to_text_and_tails_the_selected_chat() {
 fn cli_watch_reply_requires_policy_acceptance_before_reading_source() {
     let dir = tempfile::tempdir().expect("tempdir");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             dir.path().to_str().expect("utf8 path"),
@@ -894,8 +896,8 @@ fn cli_watch_reply_rejects_piped_or_redirected_input() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             dir.path().to_str().expect("utf8 path"),
@@ -922,8 +924,8 @@ fn cli_watch_reply_rejects_piped_or_redirected_input() {
 
 #[test]
 fn cli_watch_help_documents_human_reply_mode() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args(["watch", "--help"])
         .assert()
         .success()
@@ -937,8 +939,8 @@ fn cli_watch_help_documents_human_reply_mode() {
 
 #[test]
 fn cli_watch_reply_no_open_requires_reply_mode() {
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "watch",
             "--source",
@@ -976,8 +978,8 @@ fn cli_prune_deleted_rebuilds_before_the_later_edit_floor() {
     .concat();
     std::fs::write(&fixture, initial).expect("write initial fixture");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -998,8 +1000,8 @@ fn cli_prune_deleted_rebuilds_before_the_later_edit_floor() {
     .concat();
     std::fs::write(&fixture, updated).expect("write updated fixture");
 
-    let prune = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let prune = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -1024,8 +1026,8 @@ fn cli_prune_deleted_rebuilds_before_the_later_edit_floor() {
         "the report and freshness count must reflect applied deletions"
     );
 
-    let search = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let search = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),

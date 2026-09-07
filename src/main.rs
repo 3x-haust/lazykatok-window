@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Cli;
-use katok::{
+use lazykatok::{
     config::KatokConfig,
     paths::{default_data_dir, ensure_private_dir},
 };
@@ -55,12 +55,12 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 fn error_code(error: &anyhow::Error) -> &'static str {
-    match error.downcast_ref::<katok::Error>() {
-        Some(katok::Error::SemanticIndexMissing) => "semantic_index_missing",
-        Some(katok::Error::SemanticIndexStale(_)) => "semantic_index_stale",
-        Some(katok::Error::SemanticIndexBusy(_)) => "semantic_index_busy",
-        Some(katok::Error::EmptyQuery) => "empty_query",
-        Some(katok::Error::Sql(_)) => "sqlite_error",
+    match error.downcast_ref::<lazykatok::Error>() {
+        Some(lazykatok::Error::SemanticIndexMissing) => "semantic_index_missing",
+        Some(lazykatok::Error::SemanticIndexStale(_)) => "semantic_index_stale",
+        Some(lazykatok::Error::SemanticIndexBusy(_)) => "semantic_index_busy",
+        Some(lazykatok::Error::EmptyQuery) => "empty_query",
+        Some(lazykatok::Error::Sql(_)) => "sqlite_error",
         _ => "command_failed",
     }
 }

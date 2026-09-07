@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Rebrand
+
+- Renamed the product to `lazykatok`: crate and binary name, Formula, setup
+  script, release/CI contract, and user-visible status lines. The repository
+  moved to https://github.com/changeroa/lazykatok (public). The local data
+  directory keeps its previous `katok` path so existing archives and indexes
+  stay valid.
+- Rewrote the README for the lazykatok identity.
+
+## Unreleased (pre-rebrand)
+
 ### Reply TUI
 
 - Redesigned `watch --reply` with compact local timestamps, Unicode-width sender

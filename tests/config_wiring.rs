@@ -8,8 +8,8 @@ fn cli_honors_configured_chunk_gap_when_syncing() {
     std::fs::write(&config, "chunk_gap_group_seconds = 9999\n").expect("write config");
     let data_dir = dir.path().join("data");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--config",
             config.to_str().expect("utf8 config"),
@@ -33,8 +33,8 @@ fn cli_honors_configured_semantic_dir_when_indexing() {
     std::fs::write(&config, "semantic_dir = \"custom-semantic\"\n").expect("write config");
     let data_dir = dir.path().join("data");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--config",
             config.to_str().expect("utf8 config"),
@@ -49,8 +49,8 @@ fn cli_honors_configured_semantic_dir_when_indexing() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "mock")
         .args([
             "--config",
@@ -89,8 +89,8 @@ fn cli_honors_configured_snippet_length_when_searching() {
     std::fs::write(&config, "snippet_length = 5\n").expect("write config");
     let data_dir = dir.path().join("data");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--config",
             config.to_str().expect("utf8 config"),
@@ -105,8 +105,8 @@ fn cli_honors_configured_snippet_length_when_searching() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--config",
             config.to_str().expect("utf8 config"),

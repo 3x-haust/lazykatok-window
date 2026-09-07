@@ -545,7 +545,7 @@ pub fn resolve_auth(options: &AuthOptions) -> Result<ResolvedAuth> {
 
     // e. SHA-512 hash recovery (expensive; logged once)
     if let Some(hash) = active_hash {
-        eprintln!("katok: recovering KakaoTalk user id (one-time SHA-512 scan)...");
+        eprintln!("lazykatok: recovering KakaoTalk user id (one-time SHA-512 scan)...");
         if let Some(user_id) = recover_user_id_from_sha512(&hash, options.max_user_id) {
             if !candidates.contains(&user_id) {
                 if let Some(openable) = verify(user_id, &uuid, &database_files) {

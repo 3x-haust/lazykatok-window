@@ -1384,7 +1384,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "katok"
+name = "lazykatok"
 version = "0.3.2"
 dependencies = [
  "aes",

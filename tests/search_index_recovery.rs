@@ -10,7 +10,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn run_json(data_dir: &Path, args: &[&str]) -> Value {
-    let mut command = Command::cargo_bin("katok").expect("katok binary");
+    let mut command = Command::cargo_bin("lazykatok").expect("lazykatok binary");
     command
         .env("KATOK_EMBEDDER", "local-test")
         .arg("--data-dir")
@@ -63,8 +63,8 @@ fn doctor_and_search_reject_an_archive_newer_than_the_index() {
         true
     );
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .arg("--data-dir")
         .arg(&data_dir)
@@ -184,8 +184,8 @@ fn failed_rebuild_keeps_the_committed_generation_and_returns_json_error() {
     let config = dir.path().join("bad.toml");
     std::fs::write(&config, "vector_dimension = 0\n").expect("bad config");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .arg("--config")
         .arg(&config)
@@ -260,8 +260,8 @@ fn bm25_treats_fts_punctuation_as_literal_user_text() {
         "Golden: KAT",
         "Golden* KAT",
     ] {
-        Command::cargo_bin("katok")
-            .expect("katok binary")
+        Command::cargo_bin("lazykatok")
+            .expect("lazykatok binary")
             .arg("--data-dir")
             .arg(&data_dir)
             .args(["search", "bm25", query, "--json"])
@@ -291,7 +291,7 @@ fn concurrent_index_writers_fail_loudly_instead_of_publishing_two_generations() 
     lock.execute_batch("BEGIN EXCLUSIVE")
         .expect("exclusive lock");
 
-    let mut command = Command::cargo_bin("katok").expect("katok binary");
+    let mut command = Command::cargo_bin("lazykatok").expect("lazykatok binary");
     let output = command
         .env("KATOK_EMBEDDER", "local-test")
         .arg("--data-dir")

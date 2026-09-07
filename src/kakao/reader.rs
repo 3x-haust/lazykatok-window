@@ -373,7 +373,7 @@ fn coerce_log_id(value: &serde_json::Value) -> Option<i64> {
 }
 
 fn unreadable_database_warning() -> &'static str {
-    "katok: skipping unreadable KakaoTalk db"
+    "lazykatok: skipping unreadable KakaoTalk db"
 }
 
 /// Read a single opened database into chats + messages. `users` is built once
@@ -508,7 +508,7 @@ fn read_one(
     }
 
     if skipped_rows > 0 {
-        eprintln!("katok: skipped {skipped_rows} unreadable KakaoTalk message row(s)");
+        eprintln!("lazykatok: skipped {skipped_rows} unreadable KakaoTalk message row(s)");
     }
 
     Ok((chats, messages))

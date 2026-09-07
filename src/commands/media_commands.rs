@@ -5,7 +5,7 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::cli::MediaCommand;
 use crate::support::print_payload;
-use katok::kakao::{
+use lazykatok::kakao::{
     media_paths::MediaDirs,
     media_reader::read_media_chat_ids_with_options,
     media_resolver::{MediaKind, MediaReport, MediaResolveOptions, MediaTier},
@@ -66,7 +66,7 @@ fn run_get(
     data_dir: &Path,
 ) -> Result<()> {
     let kinds = parse_kinds(&kinds, &MediaKind::ALL)?;
-    let home = katok::kakao::default_home().context("resolve home directory")?;
+    let home = lazykatok::kakao::default_home().context("resolve home directory")?;
     let auth_options = AuthOptions::new(home.clone(), data_dir.to_path_buf());
     let query = MediaQuery {
         chat_id,
@@ -84,14 +84,20 @@ fn run_get(
             tier_counts: BTreeMap::new(),
         }
     } else {
-        katok::paths::ensure_private_dir(&output_dir).context("create private media output dir")?;
+        lazykatok::paths::ensure_private_dir(&output_dir)
+            .context("create private media output dir")?;
         let media_dirs = MediaDirs::discover(&home).context("scan KakaoTalk media cache dirs")?;
         let options = MediaResolveOptions {
             cdn_enabled: !no_cdn,
             ..MediaResolveOptions::new(output_dir.clone())
         };
-        katok::kakao::media_resolver::resolve_media_frames(chat_id, &frames, &media_dirs, &options)
-            .context("resolve media tiers")?
+        lazykatok::kakao::media_resolver::resolve_media_frames(
+            chat_id,
+            &frames,
+            &media_dirs,
+            &options,
+        )
+        .context("resolve media tiers")?
     };
     let payload = serde_json::json!({
         "chat_id": chat_id,
@@ -120,7 +126,7 @@ fn run_backfill(
     data_dir: &Path,
 ) -> Result<()> {
     let kinds = parse_kinds(&kinds, &[MediaKind::File])?;
-    let home = katok::kakao::default_home().context("resolve home directory")?;
+    let home = lazykatok::kakao::default_home().context("resolve home directory")?;
     let auth_options = AuthOptions::new(home.clone(), data_dir.to_path_buf());
     let root = out.unwrap_or_else(|| data_dir.join("media"));
 
@@ -159,10 +165,10 @@ fn run_backfill(
             ..MediaResolveOptions::new(output_dir.clone())
         };
         if !dry_run {
-            katok::paths::ensure_private_dir(&output_dir)
+            lazykatok::paths::ensure_private_dir(&output_dir)
                 .context("create private media output dir")?;
         }
-        let report = katok::kakao::media_resolver::resolve_media_frames(
+        let report = lazykatok::kakao::media_resolver::resolve_media_frames(
             *chat_id,
             &frames,
             &media_dirs,

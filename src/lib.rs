@@ -38,7 +38,7 @@ pub enum Error {
     MissingChunk(String),
     #[error("semantic index has never been synced")]
     SemanticIndexMissing,
-    #[error("semantic index is stale or corrupt: {0}; re-run katok index")]
+    #[error("semantic index is stale or corrupt: {0}; re-run lazykatok index")]
     SemanticIndexStale(String),
     #[error("semantic index rebuild is already running: {0}")]
     SemanticIndexBusy(std::path::PathBuf),

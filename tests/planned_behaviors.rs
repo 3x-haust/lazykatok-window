@@ -1,4 +1,4 @@
-use katok::{
+use lazykatok::{
     archive::Archive,
     chunking::rebuild_chunks,
     fixture::read_fixture,
@@ -97,7 +97,7 @@ fn parent_windows_group_same_chat_messages_across_senders_when_fixture_is_indexe
     assert_eq!(parent.child_chunk_ids.len(), 2);
     assert!(parent.text.contains("[민지] 보고서 초안 올렸어요"));
     assert!(parent.text.contains("[준호] 회의 전에 확인할게요"));
-    assert!(parent.text.len() <= katok::chunking::DEFAULT_PARENT_WINDOW_MAX_CHARS);
+    assert!(parent.text.len() <= lazykatok::chunking::DEFAULT_PARENT_WINDOW_MAX_CHARS);
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn parent_windows_cap_single_large_child_when_indexed() {
     let archive = Archive::open(&archive_path).expect("open archive");
     let long_text = format!(
         "{}꼬리검색",
-        "가".repeat(katok::chunking::DEFAULT_PARENT_WINDOW_MAX_CHARS + 256)
+        "가".repeat(lazykatok::chunking::DEFAULT_PARENT_WINDOW_MAX_CHARS + 256)
     );
     let message = RawMessage {
         account_hash: "acct".to_string(),
@@ -131,7 +131,7 @@ fn parent_windows_cap_single_large_child_when_indexed() {
     let parents = archive.all_parent_chunks().expect("load parents");
     assert!(parents.len() > 1);
     assert!(parents.iter().all(|parent| {
-        parent.text.chars().count() <= katok::chunking::DEFAULT_PARENT_WINDOW_MAX_CHARS
+        parent.text.chars().count() <= lazykatok::chunking::DEFAULT_PARENT_WINDOW_MAX_CHARS
     }));
     assert!(parents
         .iter()

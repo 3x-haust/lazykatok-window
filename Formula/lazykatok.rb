@@ -1,7 +1,7 @@
-class Katok < Formula
-  desc "Local KakaoTalk keyword, BM25, and vector search CLI for Apple Silicon macOS"
-  homepage "https://github.com/NomaDamas/katok"
-  url "https://github.com/NomaDamas/katok.git",
+class Lazykatok < Formula
+  desc "LazyKatok: local-first KakaoTalk terminal client for Apple Silicon macOS"
+  homepage "https://github.com/changeroa/lazykatok"
+  url "https://github.com/changeroa/lazykatok.git",
     tag:      "v0.3.2",
     revision: "4b23475efaa3a65c393542cf8799ef9e51af5c1a"
   license "MIT"
@@ -19,11 +19,11 @@ class Katok < Formula
         System Settings > Privacy & Security > Full Disk Access
 
       Then run:
-        katok doctor --json
+        lazykatok doctor --json
     EOS
   end
 
   test do
-    assert_match "katok", shell_output("#{bin}/katok --help")
+    assert_match "lazykatok", shell_output("#{bin}/lazykatok --help")
   end
 end

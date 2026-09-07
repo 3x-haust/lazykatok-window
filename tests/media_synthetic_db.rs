@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use aes::Aes256;
 use cbc::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
-use katok::kakao::{
+use lazykatok::kakao::{
     auth, derive,
     media_paths::{
         album_full_stem, album_thumb_stem, chat_media_dir_name, photo_full_stem, photo_thumb_stem,
@@ -337,7 +337,7 @@ fn sha1_hex(bytes: &[u8]) -> String {
 }
 
 fn record(
-    report: &katok::kakao::media_resolver::MediaReport,
+    report: &lazykatok::kakao::media_resolver::MediaReport,
     log_id: i64,
     idx: usize,
 ) -> &MediaRecord {

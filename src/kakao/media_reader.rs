@@ -91,7 +91,7 @@ pub fn read_media_frames_from_databases(
 
     for path in database_files {
         let Ok(conn) = reader::open_database(path, &key) else {
-            eprintln!("katok: skipping unreadable KakaoTalk db");
+            eprintln!("lazykatok: skipping unreadable KakaoTalk db");
             continue;
         };
         rows.extend(read_media_rows(&conn, query)?);
@@ -202,7 +202,7 @@ pub fn read_media_chat_ids_with_options(
     let mut out = Vec::new();
     for path in &resolved.database_files {
         let Ok(conn) = reader::open_database(path, &key) else {
-            eprintln!("katok: skipping unreadable KakaoTalk db");
+            eprintln!("lazykatok: skipping unreadable KakaoTalk db");
             continue;
         };
         let mut stmt = conn
@@ -236,7 +236,7 @@ where
         }
     }
     if skipped > 0 {
-        eprintln!("katok: skipped {skipped} unreadable KakaoTalk media row(s)");
+        eprintln!("lazykatok: skipped {skipped} unreadable KakaoTalk media row(s)");
     }
     Ok(out)
 }

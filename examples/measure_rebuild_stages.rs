@@ -10,9 +10,9 @@
 //!   total_ms       the whole rebuild, matching `timings_ms.rebuild_chunks`.
 //!   ref_only_ms    `rebuild_reply_and_parent_refs` on its own — archive-wide, index-independent.
 //!   scoped_ms      total - ref_only, i.e. everything the tail scope and the indexes govern.
-use katok::archive::Archive;
-use katok::chunking::{rebuild_chunks_for_chats, ChunkSettings};
-use katok::types::TouchedChat;
+use lazykatok::archive::Archive;
+use lazykatok::chunking::{rebuild_chunks_for_chats, ChunkSettings};
+use lazykatok::types::TouchedChat;
 use std::env;
 use std::io::{self, Write};
 use std::path::Path;

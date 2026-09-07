@@ -1,6 +1,6 @@
 use crate::support::print_payload;
 use anyhow::{Context, Result};
-use katok::{
+use lazykatok::{
     archive::Archive,
     config::KatokConfig,
     semantic::{index_semantic_live_for_parents, planned_semantic_documents_for_parents},
@@ -76,7 +76,7 @@ fn run_live_index(input: LiveIndexInput<'_>) -> Result<()> {
             input.full,
         ))
         .context("index semantic documents")?;
-    let generation = katok::semantic::current_generation(input.semantic_dir)
+    let generation = lazykatok::semantic::current_generation(input.semantic_dir)
         .context("resolve committed semantic generation")?;
     let documents = planned_semantic_documents_for_parents(input.parents, &generation);
     let payload = serde_json::json!({

@@ -5,9 +5,9 @@
 //! that room's newest existing message, so the rebuild scopes to the tail past the last stable
 //! window boundary — the shape a live sync produces. Set MEASURE_FULL=1 to force a whole-chat
 //! rebuild instead (the pre-tail-scope behaviour) for a before/after comparison.
-use katok::archive::Archive;
-use katok::chunking::{rebuild_chunks_for_chats, ChunkSettings};
-use katok::types::TouchedChat;
+use lazykatok::archive::Archive;
+use lazykatok::chunking::{rebuild_chunks_for_chats, ChunkSettings};
+use lazykatok::types::TouchedChat;
 use std::env;
 use std::io::{self, Write};
 use std::path::Path;

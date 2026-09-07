@@ -11,8 +11,8 @@ fn cli_doctor_reports_sync_and_index_freshness_when_search_needs_updates() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("HOME", dir.path())
         .args([
             "--data-dir",
@@ -27,8 +27,8 @@ fn cli_doctor_reports_sync_and_index_freshness_when_search_needs_updates() {
         .stdout(predicate::str::contains("\"status\": \"not_checked\""))
         .stdout(predicate::str::contains("\"sync_before_search\": true"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -41,8 +41,8 @@ fn cli_doctor_reports_sync_and_index_freshness_when_search_needs_updates() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -53,8 +53,8 @@ fn cli_doctor_reports_sync_and_index_freshness_when_search_needs_updates() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("HOME", dir.path())
         .args([
             "--data-dir",

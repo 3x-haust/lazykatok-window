@@ -5,8 +5,8 @@ use predicates::prelude::*;
 fn live_semantic_doctor_json_reports_embeddinggemma_q4_local_defaults_when_unconfigured() {
     let dir = tempfile::tempdir().expect("create tempdir");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("HOME", dir.path())
         .args([
             "--data-dir",
@@ -33,8 +33,8 @@ fn live_semantic_cli_indexes_local_embeddings_and_searches_without_endpoint() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let data_dir = dir.path().join("data");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 data"),
@@ -47,8 +47,8 @@ fn live_semantic_cli_indexes_local_embeddings_and_searches_without_endpoint() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -64,8 +64,8 @@ fn live_semantic_cli_indexes_local_embeddings_and_searches_without_endpoint() {
         .stdout(predicate::str::contains("\"vectorstore\": \"local\""))
         .stdout(predicate::str::contains("\"embedding_calls\": 1"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -78,8 +78,8 @@ fn live_semantic_cli_indexes_local_embeddings_and_searches_without_endpoint() {
         .stdout(predicate::str::contains("\"embedding_calls\": 0"))
         .stdout(predicate::str::contains("\"embedded_texts\": 0"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -113,8 +113,8 @@ fn live_semantic_cli_rejects_stale_remote_embedding_endpoint_config() {
     .expect("write config");
     let data_dir = dir.path().join("data");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--config",
             config.to_str().expect("utf8 config"),

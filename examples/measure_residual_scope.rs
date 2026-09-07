@@ -11,9 +11,9 @@
 //!   MEASURE_RUNS=3          warm runs per stage (default 3)
 //!   MEASURE_SKIP_EQUALITY=1 skip the full-vs-scoped 7-table diff (slow on huge archives)
 //!   MEASURE_SKIP_FULL_REBUILD=1  skip full rebuild half of equality
-use katok::archive::Archive;
-use katok::chunking::{rebuild_chunks_for_chats, rebuild_chunks_with_settings, ChunkSettings};
-use katok::types::TouchedChat;
+use lazykatok::archive::Archive;
+use lazykatok::chunking::{rebuild_chunks_for_chats, rebuild_chunks_with_settings, ChunkSettings};
+use lazykatok::types::TouchedChat;
 use rusqlite::Connection;
 use std::env;
 use std::fs;

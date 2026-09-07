@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use katok::kakao::{auth, derive, AuthOptions};
+use lazykatok::kakao::{auth, derive, AuthOptions};
 use rusqlite::Connection;
 
 const TEST_UUID: &str = "00000000-1111-2222-3333-444444444444";
@@ -131,7 +131,7 @@ fn reads_synthetic_kakao_db_and_maps_model() {
         uuid_override: Some(TEST_UUID.to_string()),
         max_user_id: 0,
     };
-    let output = katok::kakao::read_kakao_with_options(&options).expect("read kakao");
+    let output = lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao");
 
     // Empty-text message (logId 23) is filtered out → 6 messages remain.
     assert_eq!(output.messages.len(), 6);
@@ -264,7 +264,7 @@ fn malformed_message_row_is_skipped_not_fatal() {
         uuid_override: Some(TEST_UUID.to_string()),
         max_user_id: 0,
     };
-    let output = katok::kakao::read_kakao_with_options(&options).expect("read kakao");
+    let output = lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao");
 
     // The malformed row is dropped; both good rows survive.
     let ids: Vec<&str> = output
@@ -299,7 +299,7 @@ fn discovers_and_reads_db_suffixed_file() {
         uuid_override: Some(TEST_UUID.to_string()),
         max_user_id: 0,
     };
-    let output = katok::kakao::read_kakao_with_options(&options).expect("read kakao");
+    let output = lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao");
 
     // Same content as the bare-named DB: 6 mapped messages, 2 chats.
     assert_eq!(output.messages.len(), 6);
@@ -407,7 +407,7 @@ fn reconstructs_names_for_unnamed_rooms() {
         uuid_override: Some(TEST_UUID.to_string()),
         max_user_id: 0,
     };
-    let output = katok::kakao::read_kakao_with_options(&options).expect("read kakao");
+    let output = lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao");
 
     let name_of = |id: &str| {
         output
@@ -508,7 +508,7 @@ fn reads_older_schema_without_title_or_member_columns() {
         uuid_override: Some(TEST_UUID.to_string()),
         max_user_id: 0,
     };
-    let output = katok::kakao::read_kakao_with_options(&options).expect("read kakao");
+    let output = lazykatok::kakao::read_kakao_with_options(&options).expect("read kakao");
 
     assert_eq!(output.messages.len(), 1);
     let chat = output

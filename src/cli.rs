@@ -2,7 +2,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "katok", about = "katok: local KakaoTalk search CLI")]
+#[command(
+    name = "lazykatok",
+    about = "lazykatok: local KakaoTalk terminal client"
+)]
 pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) data_dir: Option<PathBuf>,
@@ -35,7 +38,7 @@ pub(crate) enum Commands {
         /// Actually delete what `--prune-preview` reports.
         ///
         /// This is the only command that removes archived messages. Preview
-        /// first; a deletion cannot be undone from within katok.
+        /// first; a deletion cannot be undone from within lazykatok.
         #[arg(long, conflicts_with = "prune_preview")]
         prune_deleted: bool,
         /// Include per-chat earliest-change keys (`touched_chats`) in the report.
@@ -149,7 +152,7 @@ pub(crate) enum Commands {
         /// stop without any visible fallback.
         #[arg(long, requires = "reply")]
         reply_no_open: bool,
-        /// Confirm that replies may use the existing `katok send` Accessibility path.
+        /// Confirm that replies may use the existing `lazykatok send` Accessibility path.
         #[arg(long)]
         accept_use_policy: bool,
         /// Poll interval in milliseconds.
@@ -405,7 +408,7 @@ mod tests {
     #[test]
     fn send_listing_modes_parse_without_target() {
         for flag in ["--list-windows", "--list-rooms"] {
-            let cli = Cli::try_parse_from(["katok", "send", flag])
+            let cli = Cli::try_parse_from(["lazykatok", "send", flag])
                 .unwrap_or_else(|error| panic!("{flag} should not require --room: {error}"));
 
             assert!(matches!(

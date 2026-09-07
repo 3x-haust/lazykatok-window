@@ -1,13 +1,13 @@
 [package]
-name = "katok"
+name = "lazykatok"
 version = "0.3.2"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
-description = "Local KakaoTalk keyword, BM25, and vector search CLI for Apple Silicon macOS"
+description = "LazyKatok: local-first KakaoTalk terminal client (watch, reply TUI, search) for Apple Silicon macOS"
 readme = "README.md"
-repository = "https://github.com/NomaDamas/katok"
-keywords = ["kakao", "kakaotalk", "search", "cli"]
+repository = "https://github.com/changeroa/lazykatok"
+keywords = ["kakao", "kakaotalk", "chat", "tui", "cli"]
 categories = ["command-line-utilities"]
 exclude = [
     ".fastembed_cache/**",
@@ -29,7 +29,7 @@ private-send = [
 ]
 
 [[bin]]
-name = "katok"
+name = "lazykatok"
 path = "src/main.rs"
 
 [dependencies]

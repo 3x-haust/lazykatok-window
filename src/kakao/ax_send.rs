@@ -1132,7 +1132,7 @@ pub fn send_image_to_open_window(
     let clipboard = ClipboardRestore::capture()?;
     if clipboard.unreadable_flavors() > 0 {
         eprintln!(
-            "katok: {} clipboard flavor(s) could not be read and will not be restored",
+            "lazykatok: {} clipboard flavor(s) could not be read and will not be restored",
             clipboard.unreadable_flavors()
         );
     }
@@ -2052,7 +2052,7 @@ pub fn draft_to_open_window(
     let clipboard = ClipboardRestore::capture()?;
     if clipboard.unreadable_flavors() > 0 {
         eprintln!(
-            "katok: {} clipboard flavor(s) could not be read and will not be restored",
+            "lazykatok: {} clipboard flavor(s) could not be read and will not be restored",
             clipboard.unreadable_flavors()
         );
     }

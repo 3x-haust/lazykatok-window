@@ -1,7 +1,7 @@
 use crate::cli::ChunkCommand;
 use crate::support::print_payload;
 use anyhow::{Context, Result};
-use katok::archive::Archive;
+use lazykatok::archive::Archive;
 use std::path::Path;
 
 pub(crate) fn run(command: ChunkCommand, archive_path: &Path) -> Result<()> {

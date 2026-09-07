@@ -11,8 +11,8 @@ fn cli_navigates_micro_chunk_context_and_parent_window_when_synced() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -25,8 +25,8 @@ fn cli_navigates_micro_chunk_context_and_parent_window_when_synced() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -41,8 +41,8 @@ fn cli_navigates_micro_chunk_context_and_parent_window_when_synced() {
         .stdout(predicate::str::contains("chunk_2aeac4db0a04ceb2"))
         .stdout(predicate::str::contains("\"next\": null"));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -66,8 +66,8 @@ fn cli_semantic_search_returns_parent_windows_with_child_chunk_ids() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -80,8 +80,8 @@ fn cli_semantic_search_returns_parent_windows_with_child_chunk_ids() {
         .assert()
         .success();
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -95,8 +95,8 @@ fn cli_semantic_search_returns_parent_windows_with_child_chunk_ids() {
             "\"semantic_units\": \"parent_windows\"",
         ));
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -120,8 +120,8 @@ fn cli_rejects_stale_micro_chunk_semantic_cursor_when_searching() {
     let data_dir = dir.path();
     let fixture = fixture_path("replies.jsonl");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .args([
             "--data-dir",
             data_dir.to_str().expect("utf8 path"),
@@ -153,8 +153,8 @@ fn cli_rejects_stale_micro_chunk_semantic_cursor_when_searching() {
     )
     .expect("write stale cursor");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("KATOK_EMBEDDER", "local-test")
         .args([
             "--data-dir",
@@ -166,6 +166,6 @@ fn cli_rejects_stale_micro_chunk_semantic_cursor_when_searching() {
         ])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("re-run katok index"))
+        .stdout(predicate::str::contains("re-run lazykatok index"))
         .stdout(predicate::str::contains("katok-kakao-chunk-v1"));
 }

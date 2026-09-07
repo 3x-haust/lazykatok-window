@@ -69,8 +69,8 @@ def main() -> int:
     ci = read_text(".github/workflows/ci.yml")
     readme = read_text("README.md")
     gitignore = read_text(".gitignore")
-    formula = read_text("Formula/katok.rb")
-    setup_script = read_text("scripts/katok-macos-setup.sh")
+    formula = read_text("Formula/lazykatok.rb")
+    setup_script = read_text("scripts/lazykatok-macos-setup.sh")
     has_dependency_path = re.search(r"\{[^}\n]*path\s*=", cargo) is not None
     commit_formula_match = re.search(
         r"- name: Commit formula(?P<body>.*?)(?:\n\s+- name:|\Z)",
@@ -121,10 +121,10 @@ def main() -> int:
     )
 
     checks = [
-        check("package-name", 'name = "katok"' in cargo, "Cargo package is named katok"),
+        check("package-name", 'name = "lazykatok"' in cargo, "Cargo package is named lazykatok"),
         check(
             "repository",
-            'repository = "https://github.com/NomaDamas/katok"' in cargo,
+            'repository = "https://github.com/changeroa/lazykatok"' in cargo,
             "Cargo metadata points at the release repository",
         ),
         check(
@@ -149,11 +149,11 @@ def main() -> int:
         ),
         check(
             "homebrew-tap",
-            "repository: NomaDamas/homebrew-katok" not in release
+            "repository: changeroa/homebrew-lazykatok" not in release
             and "HOMEBREW_TAP_TOKEN" not in release
             and "ref: main" in release
             and "path: tap" in release,
-            "Release workflow updates Formula/katok.rb in the same repository",
+            "Release workflow updates Formula/lazykatok.rb in the same repository",
         ),
         check(
             "macos-artifacts",
@@ -163,24 +163,24 @@ def main() -> int:
         ),
         check(
             "formula-contract",
-            "class Katok < Formula" in release
+            "class Lazykatok < Formula" in release
             and 'system "cargo", "install", *std_cargo_args' in release
-            and "katok doctor --json" in release,
+            and "lazykatok doctor --json" in release,
             "Generated Homebrew formula installs via cargo and documents macOS permission check",
         ),
         check(
             "homebrew-https-url",
-            "git@github.com:NomaDamas/katok.git" not in "\n".join(
+            "git@github.com:changeroa/lazykatok.git" not in "\n".join(
                 [readme, formula, release, setup_script],
             )
-            and "https://github.com/NomaDamas/katok.git" in readme
-            and 'url "https://github.com/NomaDamas/katok.git"' in formula
-            and 'url "https://github.com/NomaDamas/katok.git"' in release,
+            and "https://github.com/changeroa/lazykatok.git" in readme
+            and 'url "https://github.com/changeroa/lazykatok.git"' in formula
+            and 'url "https://github.com/changeroa/lazykatok.git"' in release,
             "Homebrew installation docs and formula URLs use HTTPS instead of SSH",
         ),
         check(
             "formula-commit-tag-env",
-            "git commit -m \"feat(katok): update to ${TAG}\"" in commit_formula_body
+            "git commit -m \"feat(lazykatok): update to ${TAG}\"" in commit_formula_body
             and "TAG: ${{ needs.validate.outputs.tag }}" in commit_formula_body,
             "Homebrew formula commit step has TAG in its own environment",
         ),

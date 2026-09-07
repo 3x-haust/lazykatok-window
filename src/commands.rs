@@ -12,7 +12,7 @@ use crossterm::{
     style::{Attribute, Print, SetAttribute},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use katok::{
+use lazykatok::{
     adapters::ChatSummary,
     archive::Archive,
     chunking::{
@@ -804,7 +804,7 @@ fn run_watch(
             },
         )?;
     } else if !reply {
-        eprintln!("katok: starting terminal watch; press Ctrl-C to stop");
+        eprintln!("lazykatok: starting terminal watch; press Ctrl-C to stop");
     }
 
     let mut poll = 0u64;
@@ -828,7 +828,7 @@ fn run_watch(
                 },
             )?;
         } else if poll == 1 && !reply {
-            eprintln!("katok: reading source {source}...");
+            eprintln!("lazykatok: reading source {source}...");
         }
         // Build a fresh adapter each pass. The macOS adapter memoizes one read
         // per instance, which is correct for `sync` but a watch loop must see
@@ -939,12 +939,12 @@ fn run_watch(
                 .map(sanitize_terminal_text)
                 .unwrap_or_else(|| "selected chat".to_string());
             let status = format!(
-                "katok: watching {label}; displayed {emitted_messages} recent message(s); observed {} message(s) across {} chat(s)",
+                "lazykatok: watching {label}; displayed {emitted_messages} recent message(s); observed {} message(s) across {} chat(s)",
                 messages.len(), chat_count(&messages)
             );
             if let Some(terminal) = reply_terminal.as_mut() {
                 terminal.push_line(status)?;
-                terminal.push_line(format!("katok: replies target {label}"))?;
+                terminal.push_line(format!("lazykatok: replies target {label}"))?;
             } else {
                 eprintln!("{status}");
             }
@@ -1003,9 +1003,9 @@ fn run_watch_with_reply(
     data_dir: &Path,
 ) -> Result<()> {
     let mut terminal = ReplyTerminal::new()?;
-    terminal.push_line("katok: starting terminal watch; press Ctrl-C to stop")?;
+    terminal.push_line("lazykatok: starting terminal watch; press Ctrl-C to stop")?;
     terminal.push_line(
-        "katok: reply mode enabled; type a message and press Enter to send, /help for commands, /quit to stop",
+        "lazykatok: reply mode enabled; type a message and press Enter to send, /help for commands, /quit to stop",
     )?;
 
     let (outcome_tx, outcome_rx) = mpsc::channel();
@@ -1300,16 +1300,16 @@ fn render_reply_poll_outcome(
                     .map(sanitize_terminal_text)
                     .unwrap_or_else(|| "selected chat".to_string());
                 renderer.render_system(format!(
-                    "katok: watching {label}; displayed {emitted_messages} recent message(s); observed {observed_messages} message(s) across {observed_chats} chat(s)"
+                    "lazykatok: watching {label}; displayed {emitted_messages} recent message(s); observed {observed_messages} message(s) across {observed_chats} chat(s)"
                 ))?;
-                renderer.render_system(format!("katok: replies target {label}"))?;
+                renderer.render_system(format!("lazykatok: replies target {label}"))?;
             }
             // The protocol carries the complete poll state even though the reply UI currently
             // prints only observed and emitted counts. Keep the other state available to the pump.
             let _poll_state = (archive_changed, archived_messages, chunks);
         }
         ReplyPollOutcome::Error { poll, error } => {
-            renderer.render_system(format!("katok: watch poll {poll} failed: {error:#}"))?;
+            renderer.render_system(format!("lazykatok: watch poll {poll} failed: {error:#}"))?;
         }
     }
     Ok(())
@@ -1367,7 +1367,7 @@ fn write_chat_selection_list(stderr: &mut impl Write, chats: &[ChatSummary]) -> 
 }
 
 fn select_watch_chat(source: &str, path: Option<PathBuf>, data_dir: &Path) -> Result<ChatSummary> {
-    eprintln!("katok: reading chat list from {source}...");
+    eprintln!("lazykatok: reading chat list from {source}...");
     let adapter = adapter_for_source(source, path, data_dir)?;
     let mut chats = adapter.chats().context("list source chats")?;
     if chats.is_empty() {
@@ -1482,12 +1482,12 @@ where
             if send_state.in_flight {
                 terminal.restore_draft(&line)?;
                 terminal.render_system(
-                    "katok: 이전 전송이 끝나기를 기다리는 중입니다".to_string(),
+                    "lazykatok: 이전 전송이 끝나기를 기다리는 중입니다".to_string(),
                 )?;
                 return Ok(false);
             }
             let chat_id = chat_id.context("watch --reply has no selected chat")?;
-            terminal.render_system("katok: 전송 중…".to_string())?;
+            terminal.render_system("lazykatok: 전송 중…".to_string())?;
             send_state.in_flight = true;
             start_send(ReplySendRequest {
                 chat_id: chat_id.to_string(),
@@ -1499,11 +1499,11 @@ where
         }
         ReplyCommand::Quit => return finish_reply_quit(terminal, send_state),
         ReplyCommand::Help => terminal.render_system(
-            "katok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit".to_string(),
+            "lazykatok: Enter send; Left/Right/Home/End or Ctrl-A/B/E/F move; Backspace/Delete, Ctrl-W/U/K edit; Up/Down/PgUp/PgDn scroll; Ctrl-C/Ctrl-D or /quit quit".to_string(),
         )?,
         ReplyCommand::Empty => {}
         ReplyCommand::Ignored => terminal
-            .render_system("katok: not sent; unknown slash command".to_string())?,
+            .render_system("lazykatok: not sent; unknown slash command".to_string())?,
     }
     Ok(false)
 }
@@ -1513,7 +1513,7 @@ fn finish_reply_quit(
     send_state: &ReplySendState,
 ) -> Result<bool> {
     if send_state.in_flight {
-        terminal.render_system("katok: 전송은 백그라운드에서 계속됩니다".to_string())?;
+        terminal.render_system("lazykatok: 전송은 백그라운드에서 계속됩니다".to_string())?;
     }
     Ok(true)
 }
@@ -1526,9 +1526,9 @@ fn drain_reply_send_outcomes(
         send_state.in_flight = false;
         match outcome {
             Ok(chars) => {
-                terminal.render_system(format!("katok: sent reply ({chars} chars)"))?;
+                terminal.render_system(format!("lazykatok: sent reply ({chars} chars)"))?;
             }
-            Err(err) => terminal.render_system(format!("katok: send failed: {err:#}"))?,
+            Err(err) => terminal.render_system(format!("lazykatok: send failed: {err:#}"))?,
         }
     }
     Ok(())
@@ -1583,24 +1583,27 @@ where
 
 #[cfg(all(target_os = "macos", feature = "private-send"))]
 fn send_reply_to_chat(chat_id: &str, body: &str, no_open: bool, data_dir: &Path) -> Result<usize> {
-    let mut command = ProcessCommand::new(std::env::current_exe().context("resolve katok binary")?);
+    let mut command =
+        ProcessCommand::new(std::env::current_exe().context("resolve lazykatok binary")?);
     command.args(reply_send_args(chat_id, no_open, data_dir));
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("start katok send")?;
+        .context("start lazykatok send")?;
     {
-        let stdin = child.stdin.as_mut().context("open katok send stdin")?;
+        let stdin = child.stdin.as_mut().context("open lazykatok send stdin")?;
         stdin
             .write_all(body.as_bytes())
-            .context("write reply body to katok send")?;
+            .context("write reply body to lazykatok send")?;
         stdin
             .write_all(b"\n")
-            .context("finish reply body for katok send")?;
+            .context("finish reply body for lazykatok send")?;
     }
-    let output = child.wait_with_output().context("wait for katok send")?;
+    let output = child
+        .wait_with_output()
+        .context("wait for lazykatok send")?;
     if !output.status.success() {
         let detail = send_child_error_detail(output.status, &output.stdout, &output.stderr);
         anyhow::bail!("{detail}");
@@ -1657,7 +1660,7 @@ fn send_child_error_detail(status: impl std::fmt::Display, stdout: &[u8], stderr
         return stdout.to_string();
     }
 
-    format!("katok send failed with {status}")
+    format!("lazykatok send failed with {status}")
 }
 
 #[cfg(not(all(target_os = "macos", feature = "private-send")))]
@@ -1744,7 +1747,7 @@ fn run_send(
     json: bool,
     archive_path: &Path,
 ) -> Result<()> {
-    use katok::kakao::ax_send;
+    use lazykatok::kakao::ax_send;
     use std::io::Read;
 
     if list_windows {
@@ -1845,7 +1848,7 @@ fn run_send(
         );
     }
 
-    let outcome = katok::kakao::send_curtain::run_with_curtain(curtain_title, move |curtain| {
+    let outcome = lazykatok::kakao::send_curtain::run_with_curtain(curtain_title, move |curtain| {
         let ctx = ax_send::SendContext::with_curtain(policy, curtain);
         if dry_run {
             return ax_send::resolve_room_window(&target_owned, allow_open, &ctx);
@@ -1917,8 +1920,8 @@ fn run_doctor(
 ) -> Result<()> {
     let macos_probe = macos_probe_payload(macos_probe_enabled, &data_dir);
     let payload = serde_json::json!({
-        "name": "katok",
-        "command": "katok",
+        "name": "lazykatok",
+        "command": "lazykatok",
         "data_dir": data_dir,
         "archive": archive_path,
         "semantic_index": semantic_dir,
@@ -2028,7 +2031,7 @@ mod reply_terminal_tests {
     use anyhow::anyhow;
     use chrono::{TimeZone, Utc};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-    use katok::{
+    use lazykatok::{
         types::RawMessage,
         watch::{ReplyRow, ReplyUiState, RowStyle, ScrollDelta},
     };
@@ -2098,7 +2101,7 @@ mod reply_terminal_tests {
             ReplyTerminalAction::Submit("확인".to_string()),
             Some("chat-synthetic-1"),
             false,
-            Path::new("/tmp/katok-synthetic"),
+            Path::new("/tmp/lazykatok-synthetic"),
             &mut sends,
             &mut sender,
         )
@@ -2106,12 +2109,12 @@ mod reply_terminal_tests {
 
         assert!(!quit);
         assert_eq!(call_count.get(), 1);
-        assert_eq!(system_lines(&mut state), ["katok: 전송 중…"]);
+        assert_eq!(system_lines(&mut state), ["lazykatok: 전송 중…"]);
 
         drain_reply_send_outcomes(&mut state, &mut sends).expect("render fake completion");
         assert_eq!(
             system_lines(&mut state),
-            ["katok: 전송 중…", "katok: sent reply (2 chars)"]
+            ["lazykatok: 전송 중…", "lazykatok: sent reply (2 chars)"]
         );
     }
 
@@ -2128,7 +2131,7 @@ mod reply_terminal_tests {
             ReplyTerminalAction::Submit("first".to_string()),
             Some("chat-synthetic-1"),
             false,
-            Path::new("/tmp/katok-synthetic"),
+            Path::new("/tmp/lazykatok-synthetic"),
             &mut sends,
             &mut sender,
         )
@@ -2138,7 +2141,7 @@ mod reply_terminal_tests {
             ReplyTerminalAction::Submit("둘째 초안".to_string()),
             Some("chat-synthetic-1"),
             false,
-            Path::new("/tmp/katok-synthetic"),
+            Path::new("/tmp/lazykatok-synthetic"),
             &mut sends,
             &mut sender,
         )
@@ -2149,8 +2152,8 @@ mod reply_terminal_tests {
         assert_eq!(
             system_lines(&mut state),
             [
-                "katok: 전송 중…",
-                "katok: 이전 전송이 끝나기를 기다리는 중입니다"
+                "lazykatok: 전송 중…",
+                "lazykatok: 이전 전송이 끝나기를 기다리는 중입니다"
             ]
         );
     }
@@ -2176,7 +2179,7 @@ mod reply_terminal_tests {
             ReplyTerminalAction::Submit("first".to_string()),
             Some("chat-synthetic-1"),
             false,
-            Path::new("/tmp/katok-synthetic"),
+            Path::new("/tmp/lazykatok-synthetic"),
             &mut sends,
             &mut sender,
         )
@@ -2187,7 +2190,7 @@ mod reply_terminal_tests {
             ReplyTerminalAction::Submit("second".to_string()),
             Some("chat-synthetic-1"),
             false,
-            Path::new("/tmp/katok-synthetic"),
+            Path::new("/tmp/lazykatok-synthetic"),
             &mut sends,
             &mut sender,
         )
@@ -2196,7 +2199,7 @@ mod reply_terminal_tests {
         assert_eq!(call_count.get(), 2);
         assert!(system_lines(&mut state)
             .iter()
-            .any(|line| line == "katok: send failed: synthetic send failure"));
+            .any(|line| line == "lazykatok: send failed: synthetic send failure"));
     }
 
     struct ScriptedReplyUi {
@@ -2210,7 +2213,7 @@ mod reply_terminal_tests {
             Ok(())
         }
 
-        fn render_chat(&mut self, entry: katok::watch::ChatEntry) -> anyhow::Result<()> {
+        fn render_chat(&mut self, entry: lazykatok::watch::ChatEntry) -> anyhow::Result<()> {
             self.state.push_chat(entry);
             Ok(())
         }
@@ -2279,7 +2282,7 @@ mod reply_terminal_tests {
             &poll_rx,
             Some("chat-synthetic-1"),
             false,
-            Path::new("/tmp/katok-synthetic"),
+            Path::new("/tmp/lazykatok-synthetic"),
             None,
             &mut sender,
         )
@@ -2291,7 +2294,7 @@ mod reply_terminal_tests {
         assert!(matches!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
         assert!(system_lines(&mut ui.state)
             .iter()
-            .any(|line| line == "katok: 전송은 백그라운드에서 계속됩니다"));
+            .any(|line| line == "lazykatok: 전송은 백그라운드에서 계속됩니다"));
         release_tx.send(()).expect("release fake sender");
         done_rx
             .recv_timeout(Duration::from_secs(1))
@@ -2623,7 +2626,7 @@ mod tests {
     fn send_child_error_detail_falls_back_to_status() {
         let detail = send_child_error_detail("exit status: 1", b"", b"");
 
-        assert_eq!(detail, "katok send failed with exit status: 1");
+        assert_eq!(detail, "lazykatok send failed with exit status: 1");
     }
 
     #[test]
@@ -2662,7 +2665,7 @@ fn macos_probe_payload(enabled: bool, data_dir: &Path) -> serde_json::Value {
     }
     match dirs::home_dir() {
         Some(home) => {
-            let status = katok::kakao::probe_status(&home, data_dir);
+            let status = lazykatok::kakao::probe_status(&home, data_dir);
             serde_json::json!({
                 "status": "checked",
                 "app_installed": status.app_installed,
@@ -2725,7 +2728,7 @@ fn run_sync(
                         touched.earliest_changed_timestamp.clear();
                         touched.earliest_changed_message_id.clear();
                     } else {
-                        report.touched_chats.push(katok::types::TouchedChat {
+                        report.touched_chats.push(lazykatok::types::TouchedChat {
                             chat_id: chat_id.to_string(),
                             earliest_changed_timestamp: String::new(),
                             earliest_changed_message_id: String::new(),

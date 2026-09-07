@@ -7,8 +7,8 @@ fn cli_reads_kakaocli_chats_when_fake_read_only_binary_is_on_path() {
     let fake_bin = tempfile::tempdir().expect("create fake bin");
     write_fake_kakaocli(fake_bin.path());
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("PATH", fake_path(fake_bin.path()))
         .args(["source", "chats", "--source", "kakaocli", "--json"])
         .assert()
@@ -23,8 +23,8 @@ fn cli_syncs_kakaocli_messages_without_requiring_fixture_path() {
     let data = tempfile::tempdir().expect("create data dir");
     let data_dir = data.path().to_str().expect("utf8 path");
 
-    Command::cargo_bin("katok")
-        .expect("katok binary")
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("PATH", fake_path(fake_bin.path()))
         .args([
             "--data-dir",
@@ -48,8 +48,8 @@ fn cli_surfaces_kakaocli_failure_detail_instead_of_generic_message() {
     let fake_bin = tempfile::tempdir().expect("create fake bin");
     write_failing_kakaocli(fake_bin.path());
 
-    let assert = Command::cargo_bin("katok")
-        .expect("katok binary")
+    let assert = Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
         .env("PATH", fake_path(fake_bin.path()))
         .args(["source", "chats", "--source", "kakaocli", "--json"])
         .assert()

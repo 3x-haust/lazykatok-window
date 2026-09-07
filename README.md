@@ -1,531 +1,124 @@
-# katok
+# lazykatok
 
-`katok`은 Apple Silicon Mac에서 카카오톡 대화를 로컬로 읽고, 키워드·벡터
-검색과 사용자가 명시적으로 승인한 메시지 전송을 제공하는 CLI입니다.
+로컬 우선(local-first) 카카오톡 터미널 클라이언트. 방 목록을 최신순으로 골라 들어가는
+실시간 대화 TUI, 로컬 암호화 아카이브, 키워드·BM25·의미 검색을 하나의 CLI로 제공합니다.
+Apple Silicon macOS 전용.
 
-읽기·검색·인덱싱을 위해 카카오톡 대화 내용을 별도의 `katok` 서버로 올리지
-않습니다. macOS에 저장된 카카오톡 DB를 읽어 개인 Mac 안에 정규화된
-아카이브와 검색 인덱스를 만들고, `katok search ...` 명령으로 필요한 대화를
-찾습니다.
+[![CI](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml/badge.svg)](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml)
 
-`katok send`는 카카오 원격 서버의 비공개 프로토콜이나 비공식 API를 직접
-호출하지 않고, 사용자의 Mac에서 실행 중인 공식 KakaoTalk 앱을 macOS
-Accessibility로 조작합니다. 이는 카카오의 승인이나 이용제한 면제를 의미하지
-않습니다. 실제 사용 전에 [허용 사용 정책](ACCEPTABLE_USE_POLICY.md)과
-[면책 고지](DISCLAIMER.md)를 읽으십시오.
+## 특징
 
-## 무엇을 해주나
+- **대화 TUI (`lazykatok chat`)** — 마지막 메시지가 최신인 방이 목록 맨 아래(입력
+  프롬프트 바로 위)에 1번으로 오는 방 선택, 로컬 시각 `HH:MM` + 보낸 사람 열 + 연속
+  메시지 `·` 묶음 + 날짜 구분선으로 정돈된 대화 뷰, readline식 입력 편집, 스크롤과
+  새 메시지 표식. 폴링과 전송이 백그라운드에서 돌아 입력은 항상 반응형입니다.
+- **답장 전송** — TUI에서 Enter로 카카오톡 앱에 실제 전송(macOS Accessibility 경로).
+  전송 중에도 입력 가능하고, 동시 전송은 안전을 위해 하나로 직렬화됩니다.
+- **로컬 검색** — 키워드 / BM25 / 임베딩 의미 검색. 대화 데이터는 전부 로컬
+  SQLCipher 아카이브에 저장되고 네트워크로 나가지 않습니다.
 
-- 카카오톡 macOS 앱의 로컬 DB를 읽어 대화 아카이브를 만듭니다.
-- 정확한 단어 매칭용 `keyword`, SQLite FTS5 기반 `bm25`, EmbeddingGemma 기반 `semantic` 검색을 제공합니다.
-- 긴 대화는 카카오톡 흐름에 맞게 chunk로 나누고, 5분 안팎의 같은 채팅방 대화는 parent window로 묶어 벡터 검색 품질을 높입니다.
-- 검색 결과는 짧은 snippet과 chunk id만 보여줍니다. 원문 전체는 사용자가 명시적으로 `katok chunk get <chunk-id>`를 실행할 때만 출력합니다.
-- 에이전트는 Vercel Agent Skills/Codex Skills에서 `skills/katok/SKILL.md`를 통해 CLI만 호출하면 됩니다.
-- 명시적인 정책 동의와 macOS Accessibility 권한 아래에서 텍스트·이미지를
-  공식 KakaoTalk 앱 UI로 전달할 수 있습니다.
+## 요구 사항
 
-## 지원 환경
+- Apple Silicon macOS
+- 실행 중인 카카오톡 macOS 앱 (실시간 읽기·전송)
+- Rust 1.91+ (직접 빌드 시)
+- 터미널에 **전체 디스크 접근 권한**(카톡 DB 읽기)과 **접근성 권한**(전송) —
 
-- Apple Silicon Mac
-- macOS 카카오톡 앱
-- 터미널 앱의 전체 디스크 접근 권한
-
-Intel Mac은 지원하지 않습니다. 현재 로컬 임베딩 경로가 `fastembed`와 ONNX Runtime을 사용하며, 이 dependency set은 `x86_64-apple-darwin`용 prebuilt ONNX Runtime을 제공하지 않습니다.
+  시스템 설정 > 개인정보 보호 및 보안에서 부여하고 `lazykatok doctor`로 확인하세요.
 
 ## 설치
 
-Homebrew:
+```bash
+git clone https://github.com/changeroa/lazykatok.git
+cd lazykatok
+cargo build --release
+# 바이너리: target/release/lazykatok
+```
+
+편하게 쓰려면 PATH에 둔 래퍼 하나면 충분합니다:
 
 ```bash
-brew tap NomaDamas/katok https://github.com/NomaDamas/katok.git
-brew install katok
+cat > ~/.local/bin/lazykatok <<'EOF'
+#!/usr/bin/env bash
+exec "$(dirname "$(git -C ~/src/lazykatok rev-parse --git-dir 2>/dev/null)")/target/release/lazykatok" "$@"
+EOF
+# 실제 클론 경로에 맞게 조정한 뒤 chmod +x
 ```
 
-Cargo:
+## 빠른 시작
 
 ```bash
-cargo install katok
+lazykatok doctor                 # 권한·설정 상태 점검
+lazykatok sync                   # 로컬 카톡 DB → 아카이브 동기화
+lazykatok chat                   # 방 선택 → 대화 TUI 진입 (기본)
+lazykatok chat-bg                # 카톡 창을 띄우지 않고 이미 열린 방에만 전송
+lazykatok keyword 회식           # 키워드 검색 (--limit 5 등 옵션 전달)
+lazykatok bm25 회식              # BM25 검색
+lazykatok semantic "언제 만나기로 했지"  # 의미 검색
 ```
 
-기본 설치는 macOS에서 `katok send`를 포함합니다. 검색·아카이브 기능만 필요한
-경우 전송 기능 없이 설치할 수 있습니다.
+원본 CLI 그대로 쓰는 경우:
 
 ```bash
-cargo install katok --no-default-features
+lazykatok watch --select --reply --accept-use-policy --source macos
+lazykatok search keyword <질의> --json
+lazykatok transcript --chat <chat_id> --from 2026-08-01 --to 2026-08-31 --out export.md
 ```
 
-Cargo로 설치했는데 `katok: command not found`가 나오면 현재 셸이 Cargo binary 경로를 못 보고 있는 상태입니다.
-
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-katok --help
-```
-
-영구 적용은 사용하는 셸 설정에 추가합니다.
-
-```bash
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
-exec zsh -l
-```
-
-처음 설치한 뒤에는 터미널에 전체 디스크 접근 권한을 주세요.
-
-```bash
-katok permissions macos
-```
-
-열린 System Settings에서 현재 사용하는 Terminal, iTerm, Codex 앱 또는 설치된 `katok` 실행 파일을 Full Disk Access에 추가하세요. macOS TCC 권한은 사용자가 시스템 설정에서 직접 허용해야 하므로 CLI가 자기 자신에게 권한을 영구 부여할 수는 없습니다.
-
-```bash
-katok doctor --json
-```
-
-`doctor`는 기본값으로 로컬 인덱스 freshness만 확인하므로 macOS 권한 prompt를 띄우지 않습니다.
-또한 `freshness` 섹션에서 마지막 `sync`와 `index` 완료 시각을 보여줍니다.
-카카오톡 앱, 컨테이너, DB 파일 개수, 인증 캐시 여부까지 확인하려면 아래처럼 명시적으로 실행합니다.
-
-```bash
-katok doctor --macos-probe --json
-```
-
-이 probe는 macOS가 "katok would like to access data from other apps" 권한 요청을 띄울 수 있습니다. 반복 요청을 줄이려면 `katok permissions macos`로 System Settings를 연 뒤 사용 중인 Terminal/iTerm/Codex 앱이나 설치된 `katok` 실행 파일을 Full Disk Access에 허용하세요.
-
-`katok send`는 별도의 Accessibility 권한이 필요합니다.
-
-```bash
-katok permissions macos --accessibility
-```
-
-Accessibility 권한은 사용자의 로컬 Mac에서 KakaoTalk UI를 조작할 수 있게 할
-뿐, 카카오가 자동 전송을 승인했다는 뜻은 아닙니다.
-
-권한 설정을 처음부터 안내받으려면:
-
-```bash
-scripts/katok-macos-setup.sh
-```
-
-자세한 흐름은 `docs/macos-first-run.md`에 있습니다. 카카오톡 DB 스키마, 미디어 캐시 파일명 규칙, Pkv2 복호화, WAL 읽기 불변식 같은 내부 구조는 `docs/kakao-media-internals.md`에 정리돼 있습니다.
-
-## 기본 사용 흐름
-
-```bash
-katok doctor --json
-katok sync --source macos --json
-katok index --json
-katok search keyword "계약서" --json
-katok search bm25 "지난주 미팅 자료" --json
-katok search semantic "최근에 논의한 세금 신고 일정" --json
-katok search bm25 "지난주 미팅 자료" --limit 30 --json
-```
-
-각 `search` 명령은 `--limit <N>`(기본 10)으로 반환할 결과 개수를 조절할 수 있습니다.
-
-검색 최신성이 중요하면 검색 전에 항상 `katok doctor --json`의 `freshness`를 확인하세요. 이 기본 doctor는 macOS app data probe를 실행하지 않으므로 권한 prompt 없이 사용할 수 있습니다. `sync_before_search`가 `true`이면 `katok sync --source macos --json`을 먼저 실행하고, `index_before_semantic_search`가 `true`이면 `katok index --json`을 실행한 뒤 semantic search를 사용합니다. doctor와 semantic search는 archive revision을 현재 committed index generation과 비교하므로, sync 뒤 index가 오래됐거나 vector ID가 archive와 어긋나면 검색 전에 명시적으로 재인덱싱을 요구합니다.
-
-검색 결과에서 더 넓은 맥락이 필요하면 chunk 명령을 사용합니다.
-
-```bash
-katok chunk get <chunk-id> --json
-katok chunk context <chunk-id> --json
-katok chunk parent <chunk-id> --json
-```
-
-- `chunk get`은 해당 chunk 원문을 가져옵니다.
-- `chunk context`는 같은 채팅방의 바로 앞뒤 chunk를 보여줍니다.
-- `chunk parent`는 semantic search가 사용한 더 큰 parent window를 보여줍니다.
-
-카카오톡 첨부를 추출하려면 media 명령을 사용합니다. 사진(type 2), 앨범(type 27), 영상(type 3), 그리고 일반 파일(type 18)을 다룹니다. 일반 파일은 하나의 메시지 타입이 zip·pdf·xlsx·hwp·pptx 등 모든 확장자를 덮으므로 형식별 대응이 따로 필요하지 않습니다.
-
-```bash
-katok media get --chat <chat-id> --json
-katok media get --chat <chat-id> --kind file --json
-katok media get --chat <chat-id> --log <log-id> --out ./katok-media --no-cdn --json
-```
-
-각 프레임은 로컬 full 캐시(`.img`/`.vid`), CDN presigned GET, 로컬 thumbnail `.thm`, stub 순서로 해석됩니다. 추출 자체가 사용자가 명령을 실행해 opt in하는 기능이며, 네트워크를 사용하는 유일한 동작은 attachment metadata의 CDN presigned GET입니다. CDN 응답은 `cs` SHA-1과 일치한 bytes만 저장하고, `--no-cdn`을 주면 CDN tier를 끄고 로컬 캐시만 사용합니다. 기본 출력 위치는 katok data directory 아래 `media/<chat-id>/`입니다.
-
-**일반 파일은 로컬 캐시가 없습니다.** 카카오톡은 사진·영상만 컨테이너에 캐시하고 파일 첨부는 디스크에 남기지 않으므로, 파일의 tier는 CDN 하나뿐이고 `--no-cdn`으로는 아무것도 받을 수 없습니다. 저장 파일명은 첨부의 원본 이름을 그대로 씁니다(`<logId>_<원본이름>`) — zip 본문은 확장자 sniffing으로 `.bin`이 되므로 이름이 확장자의 권위입니다.
-
-**presigned 서명은 약 14일 뒤 만료되고, 만료되면 410으로 사라집니다.** 로컬 사본이 없는 파일 첨부에서는 이것이 곧 영구 유실을 뜻하므로, 정기적으로 `media backfill`을 돌려 창이 닫히기 전에 보존하는 것이 이 기능의 실제 사용법입니다.
-
-```bash
-katok media backfill --dry-run --json
-katok media backfill --json
-katok media backfill --kind file --kind video --json
-```
-
-`backfill`은 미디어가 있는 모든 방을 돌면서 아직 만료되지 않은 링크만 받습니다. 이미 저장된 프레임은 네트워크 호출 없이 건너뛰므로 재실행이 멱등하고, 중단된 실행을 그대로 이어받습니다. 기본 kind는 `file`입니다(사진·영상은 로컬 캐시가 있지만 파일은 없기 때문). `--dry-run`은 요청을 한 번도 보내지 않고 각 프레임이 어느 tier로 갈지만 보고하므로, 받을 대상과 만료된 대상을 미리 구분할 수 있습니다.
-
-`--json` 출력 스키마의 주요 필드는 다음과 같습니다.
-
-- `chat_id`, `log_id`, `limit`, `kinds`, `output_dir`, `cdn_enabled`
-- `frame_count`: 읽은 frame 수
-- `records[]`: `logId`, `idx`, `kind`, `name`, `w`, `h`, `cs`, `s`, `tier`, `tier_reason`, `path`, `sha1`, `sender`, `ts`
-- `errors[]`: tier 실패 관측값, `logId`, `idx`, `stage`, `path`, `error`
-- `tier_counts`: `full`, `cdn`, `thumb`, `stub`, `existing`, `planned` 별 개수
-
-`tier_reason`은 왜 그 tier로 떨어졌는지 말합니다. `cdn-expired`는 서명 만료, `cdn-too-large`는 선언 크기가 `--max-bytes`를 넘어 요청 전에 거절, `cdn-unverifiable`은 `cs` 지문이 없어 검증할 수 없어 거절, `unavailable`은 로컬 캐시가 애초에 존재하지 않는 파일 첨부를 뜻합니다.
-
-## 검색 방식
-
-`katok search keyword`는 빠르고 결정적인 부분 문자열 검색입니다. 정확한 단어, 이름, 계좌번호, 고유명사처럼 그대로 기억나는 값을 찾을 때 씁니다.
-
-`katok search bm25`는 SQLite FTS5 BM25 랭킹을 사용합니다. 여러 단어가 섞인 일반 질의에 적합합니다.
-
-BM25 입력은 FTS5 연산식이 아니라 일반 검색어로 처리됩니다. `+`, `-`, 따옴표, 괄호 같은 문자가 포함되어도 문자 그대로 tokenizer에 전달되며 FTS5 column filter나 boolean 문법으로 실행되지 않습니다.
-
-`katok search semantic`은 EmbeddingGemma로 만든 로컬 벡터 인덱스를 사용합니다. 표현이 정확히 기억나지 않아도 의미가 비슷한 대화를 찾을 수 있습니다.
-
-`katok index`는 새 generation을 완전히 만든 뒤 `CURRENT` 포인터를 원자적으로 교체합니다. 실패하면 이전 generation이 그대로 유지되고 명령은 non-zero로 끝납니다. `--full`은 기존 vector를 재사용하지 않는 완전 rebuild이고, 기본 index는 healthy generation의 동일 vector만 재사용하며 무결성 불일치가 있으면 archive에서 self-heal합니다.
-
-## EmbeddingGemma 로컬 벡터 검색
-
-`katok index`는 기본값으로 `embeddinggemma-300m-q4`를 앱 프로세스 안에서 실행합니다.
-
-- Python 서버가 필요 없습니다.
-- Jina, TEI, 별도 로컬 HTTP embedding endpoint가 필요 없습니다.
-- 첫 실행 때 모델 artifact를 Hugging Face/fastembed cache에 내려받고, 이후에는 로컬 cache를 재사용합니다.
-- 벡터 인덱스와 semantic documents는 사용자 Mac 안의 katok data directory에만 저장됩니다.
-
-설정 예:
-
-```toml
-embedder_model = "embeddinggemma-300m-q4"
-embedding_batch_size = 64
-vector_dimension = 768
-semantic_dir = "semantic"
-```
-
-테스트나 오프라인 QA에서는 모델 다운로드 없이 deterministic vector를 사용할 수 있습니다.
-
-```bash
-KATOK_EMBEDDER=local-test katok index --json
-KATOK_EMBEDDER=mock katok index --json
-```
-
-실사용 경로에서는 원격 embedding endpoint 설정을 받지 않습니다. 오래된 `embedder_base_url` 또는 `allow_remote_embeddings` 설정이 있으면 거부합니다.
-
-## Vercel Agent Skills / Codex Skills에서 쓰기
-
-이 저장소에는 얇은 agent skill wrapper가 포함되어 있습니다.
-
-```text
-skills/katok/SKILL.md
-```
-
-에이전트는 카카오톡 DB나 SQLCipher 내부를 직접 만지지 않고, 아래 흐름만 사용해야 합니다.
-
-```bash
-katok doctor --json
-katok sync --source macos --json
-katok index --json
-katok search semantic "찾고 싶은 내용" --json
-katok chunk get <chunk-id> --json
-```
-
-권장 패턴:
-
-1. 검색 전에 `katok doctor --json`의 `freshness`를 봅니다.
-2. `sync_before_search`가 `true`이거나 최신 대화가 중요하면 `katok sync --source macos --json`을 실행합니다.
-3. semantic search 전에 `index_before_semantic_search`가 `true`이면 `katok index --json`을 실행합니다.
-4. 처음에는 `katok search keyword`, `katok search bm25`, `katok search semantic`으로 후보를 좁힙니다.
-5. 사용자가 특정 결과를 열어 달라고 하거나 chunk id를 제공했을 때만 `katok chunk get`으로 원문을 봅니다.
-6. semantic search 결과의 `child_chunk_ids`에서 정확한 원문으로 이동할 때는 `katok chunk context`와 `katok chunk parent`를 사용합니다.
-7. skill은 결과를 요약만 하고, indexing logic이나 DB 해독 logic을 자체 구현하지 않습니다.
-
-## macOS 소스 어댑터
-
-`katok sync --source macos`는 Rust 코드로 카카오톡 macOS 설치를 직접 읽습니다. 런타임에 Python, `kakaocli`, 별도 helper 서버가 필요 없습니다.
-
-sync는 자주 실행해도 되도록 증분으로 동작합니다. 메시지가 실제로 바뀐 채팅방의 tail만 다시 계산하므로, 일반적인 append sync 비용은 전체 아카이브 크기보다 변경 범위에 가깝게 움직입니다. 전량을 다시 계산하는 경우는 세 가지입니다. 빈 아카이브에 처음 실행하는 sync, `chunk_gap_group_seconds`/`chunk_gap_direct_seconds` 를 바꾼 뒤 처음 실행하는 sync, 그리고 chunk 경계 규칙이 바뀐 버전으로 올린 뒤 처음 실행하는 sync 입니다. 이 버전을 기록하기 전에 만들어진 기존 아카이브도 여기 해당하므로 업그레이드 직후 sync 한 번은 전량을 다시 계산합니다. 그 뒤로는 다시 증분으로 돌아옵니다. 출력에 `rebuilt_chats`와 단계별 소요 시간(`timings_ms`의 `read_source`, `upsert_messages`, `rebuild_chunks`)이 포함되므로 느린 실행의 원인을 단계 단위로 확인할 수 있습니다.
-
-요구사항:
-
-- 터미널 앱이 `~/Library/Containers/com.kakao.KakaoTalkMac/` 아래 파일을 읽을 수 있도록 전체 디스크 접근 권한을 받아야 합니다.
-- 카카오톡 앱에서 열렸거나 동기화된 채팅방의 로컬 DB 기록만 읽을 수 있습니다.
-- 최초 sync 때 암호화된 SQLCipher DB에서 계정 식별자를 복구하고, `{user_id, uuid}`만 mode `0600` cache로 저장합니다. 키 material 자체는 저장하지 않습니다.
-
-fixture로 개발/테스트할 때는 실제 카카오톡 설치가 필요 없습니다.
-
-```bash
-katok source chats --source fixture tests/fixtures/kakao/replies.jsonl --json
-katok sync --source fixture tests/fixtures/kakao/replies.jsonl --json
-```
-
-합성 데이터로 실행할 때는 `--data-dir <임시경로>` 플래그로 반드시 격리하세요. `KATOK_DATA_DIR` 환경변수는 없습니다. 설정해도 조용히 무시되고 실제 아카이브에 기록됩니다.
-
-## 실시간에 가까운 터미널 스트림
-
-`katok watch`는 설정된 source adapter를 짧은 간격으로 다시 읽고, katok의 로컬
-아카이브와 chunk를 증분 갱신하면서 한 줄에 하나씩 JSONL event를 출력합니다.
-첫 poll은 기본적으로 기준점만 잡고 기존 메시지 본문을 출력하지 않습니다.
-예외적으로 `--select`는 사람이 직접 보는 모드라서 선택한 방의 최근 `--tail`
-메시지를 먼저 보여줍니다.
-
-```bash
-katok watch --source macos --select --poll-ms 1000
-katok watch --source macos --select --reply --accept-use-policy --poll-ms 1000
-katok watch --source macos --select --reply --reply-no-open --accept-use-policy --poll-ms 1000
-katok watch --source macos --chat <chat-id> --format text --poll-ms 1000
-katok watch --source macos --poll-ms 2000
-katok watch --source macos --chat <chat-id> --poll-ms 1000
-katok watch --source fixture tests/fixtures/kakao/replies.jsonl --once --replay-existing
-```
-
-사람이 터미널에서 직접 볼 때는 `--select`를 쓰십시오. 방 목록은 마지막 메시지
-시각이 오래된 방부터 정렬되어 최신 방이 목록 맨 아래(입력 프롬프트 바로 위)에
-오고, 번호도 아래가 1번부터 매겨집니다(시각을 알 수 없는 방은 맨 위, 이름 순).
-목록이 뜨면 번호나
-`chat_id`를 입력하고, 선택한 방만 `[시간] 방 / 보낸 사람: 내용` 형식으로 표시합니다.
-`--select`는 기본 출력이 `text`입니다. 기계가 읽을 stream이 필요할 때만
-`--format jsonl`을 쓰면 됩니다. `--tail <N>`은 선택 직후 처음 보여줄 최근 메시지
-개수이며 기본값은 50개입니다. poll 완료 로그의 `observed`는 source 전체에서 읽은
-메시지 수이고, `displayed`는 그중 선택한 방에서 실제로 화면에 보여준 수입니다.
-
-같은 터미널에서 답장하려면 `--reply --accept-use-policy`를 같이 붙입니다. source 읽기와
-archive 동기화는 background poll thread에서 실행되므로, 긴 poll 중에도 입력과 화면 갱신은
-계속 반응합니다. 답장 전송도 상태 줄과 함께 background에서 실행되며, focus를 가져오는
-답장 전송은 최대 2초만 기다립니다. 화면은 스크롤 가능한 대화 기록, 구분선, 고정된
-`reply> ` 입력란, 단축키 footer로 나뉩니다.
-메시지는 로컬 시각 `HH:MM`, 12칸 보낸 사람 열로 표시되고 같은 사람이 5분 안에 보낸
-연속 메시지는 `·`로 묶입니다. 날짜가 바뀌면 날짜 구분선이 나타납니다. 새 메시지가
-도착해도 작성 중인 입력과 cursor는 그대로 유지되며, 과거 기록을 보는 중이면 viewport를
-움직이지 않고 `N new messages` 표식을 보여줍니다.
+## TUI 사용법
+
+방 목록은 마지막 메시지 시각이 오래된 방부터 위에서 아래로 정렬되고 번호는 아래가
+1번입니다 — 가장 최근에 활동한 방이 입력 프롬프트 바로 위에 1번으로 놓입니다.
+시각을 알 수 없는 방은 맨 위에 이름 순으로 표시됩니다.
 
 | 키 | 동작 |
 |---|---|
-| `Enter` | 현재 초안을 한 번 전송 |
-| `Left` / `Right`, `Ctrl-B` / `Ctrl-F` | cursor를 한 글자 이동 |
-| `Home` / `End`, `Ctrl-A` / `Ctrl-E` | 입력 시작/끝으로 이동 |
-| `Backspace` / `Delete` | cursor 앞/뒤 글자 삭제 |
-| `Ctrl-W` / `Ctrl-U` / `Ctrl-K` | 앞 단어/입력 시작까지/입력 끝까지 삭제 |
-| `Up` / `Down` | 대화를 한 줄 스크롤 |
-| `PgUp` / `PgDn` | 대화를 한 페이지 스크롤 |
-| `Ctrl-C` / `Ctrl-D` | reply mode 종료 |
+| `Enter` | 현재 초안을 선택한 방으로 전송 (`/send 메시지`도 동일) |
+| `←` `→` `Home` `End`, `Ctrl-A/B/E/F` | 초안 커서 이동 |
+| `Backspace` / `Delete`, `Ctrl-W/U/K` | 글자·단어·행 삭제 |
+| `↑` `↓` / `PgUp` `PgDn` | 대화 스크롤 / 페이지 |
+| `Ctrl-C` 또는 `Ctrl-D` | 종료 |
+| `/help`, `/quit` | 도움말, 종료 |
 
-watch가 자동으로 보내지는 않습니다. 입력란에 사용자가 직접 메시지 한 줄을 입력하고
-Enter를 누른 경우에만 현재 선택한 방으로 기존 `katok send` 경로를 한 번 실행합니다.
-기존 `/send 메시지` 형식도 같은 동작의 별칭으로 계속 사용할 수 있습니다. 빈 줄은
-무시하고, `/help`는 입력 명령을 보여주며, `/quit`은 watch를 종료합니다. 알 수 없는
-`/...` 명령은 메시지로 잘못 보내지 않습니다. `/`로 시작하는 문자를 보내려면
-`/send /...`를 사용하십시오.
-`--reply`는 interactive terminal에서만 작동하며 pipe나 redirect로 들어온 줄은
-보내지 않습니다. 실제 전송에는 아래 `katok send`와 같은 macOS Accessibility
-권한과 실행 중인 KakaoTalk 앱이 필요하고, 성공·실패 상태는 위쪽 기록에 표시됩니다.
-`--reply-no-open`을 추가하면 대상 채팅방 창이 이미 열려 있을 때의 비활성
-Accessibility 전송만 허용합니다. 방 열기뿐 아니라 KakaoTalk 활성화/raise, focus를
-가져오는 fallback, 전체 화면 curtain, global Enter도 모두 금지됩니다. 비활성 Enter가
-수락되었다고 확인되지 않으면 `unconfirmed` 실패로 표시하고 화면에 보이는 fallback은
-실행하지 않습니다. 이때 문장이 비활성 입력칸에 남거나 이미 수락됐는지까지는 판별하지
-못합니다.
-`watch`는 이 `unconfirmed` 결과를 자동 재시도하지 않습니다. 첫 시도가 실제로 수락됐지만
-비움만 관측하지 못한 경우 사용자가 직접 다시 입력해 보내면 중복 전송될 수 있으므로,
-채팅방을 확인한 뒤 수동으로 재시도하십시오.
+- 메시지는 `HH:MM 보낸사람 본문` 형태로, 같은 사람이 5분 안에 보낸 연속 메시지는
+  `·`로 묶여 표시됩니다. 날짜가 바뀌면 날짜 구분선이 나타납니다. 색상 구분 없이
+  기본 전경색으로 렌더링됩니다.
+- 새 메시지가 도착해도 작성 중인 초안과 커서는 그대로 유지됩니다. 과거 기록을
+  보는 중이면 화면은 흔들리지 않고 `N new messages` 표식만 표시됩니다.
+- 전송은 즉시 `전송 중…` 상태 줄과 함께 백그라운드로 실행되고, 결과는
+  `sent reply (N chars)` 또는 `send failed: ...` 줄로 알림됩니다. 전송 중 추가
+  Enter는 초안을 지키고 이전 전송 완료를 기다립니다.
+- paste는 텍스트 삽입일 뿐 절대 전송을 유발하지 않습니다. 붙여넣은 줄바꿈은
+  공백으로 변환됩니다.
 
-예를 들면:
+### 전송 주의사항
 
-```text
-Choose a chat to watch:
-  1. 테스트방 (group, chat-synthetic-1)
-chat number or chat_id> 1
-──────────────  2026-09-02  ──────────────
-12:00 Alice        지금 가능해요?
-12:03 ·            네, 확인했습니다.
-12:04 민준         5분 뒤에 볼게요.
-──────────────────────────────────────────
-reply> 답장 초안
-↑↓ scroll  PgUp/PgDn page  Enter send  Ctrl-C quit  /help
-```
+전송은 되돌릴 수 없고 상대에게 실제로 도착합니다. `--reply-no-open`(래퍼의
+`chat-bg`)은 카톡 창을 띄우거나 포커스를 가져가지 않고 이미 열려 있는 방에만
+조용히 전송합니다. 기본 경로는 필요할 때만 잠깐 커튼을 띄우고 카톡을 앞으로
+가져옵니다. 자세한 정책은 [ACCEPTABLE_USE_POLICY.md](ACCEPTABLE_USE_POLICY.md)와
+[DISCLAIMER.md](DISCLAIMER.md)를 참고하세요.
 
-event 종류:
+## 프라이버시
 
-- `{"type":"state","schema_version":1,"state":"started",...}`: stream 시작.
-- `{"type":"state","schema_version":1,"state":"reading",...}`: source adapter 읽기 시작.
-- `{"type":"message","schema_version":1,"change":"inserted"|"updated"|"existing","message":{...}}`:
-  새 메시지, 수정된 메시지, 또는 `--replay-existing`으로 의도적으로 재생한 현재 snapshot.
-- `{"type":"state","schema_version":1,"state":"synced"|"idle",...}`: poll 완료와 archive/chunk 상태.
-
-각 poll은 `reading` state, `message` event 0개 이상, poll 완료 `state` 순서로 출력합니다.
-`observed_messages`와 `observed_chats`는 해당 poll에서 source adapter가 본 전체
-snapshot 기준이며 poll 완료 `state`에서 의미가 있습니다. `--chat`은 message event
-출력만 제한하며, archive sync와 다음 diff 기준점은 전체 source를 계속 봅니다.
-첫 poll은 아카이브를 반드시 sync합니다. 이후 poll의 전체 source fingerprint가
-바뀌지 않았다면 동일한 메시지 전체를 다시 upsert하고 chunk를 확인하는 작업은
-건너뜁니다. 표시하지 않는 다른 방의 변경도 전체 fingerprint에 포함되므로
-아카이브 sync를 실행합니다.
-
-macOS source에서 `katok doctor --macos-probe --json`의 `auth_cached`가 `false`이면
-첫 실행 때 KakaoTalk user id 복구 스캔 때문에 `reading` 상태가 오래 지속될 수
-있습니다. 한 번 성공하면 katok cache에 저장되어 다음 실행부터 짧아집니다. user id를
-이미 알고 있다면 `KATOK_KAKAO_USER_ID=<id> katok watch --source macos ...`처럼 직접
-전달해 이 복구 스캔을 건너뛸 수 있습니다.
-
-source 읽기, archive 쓰기, 설정 오류가 나면 별도 error event를 만들지 않고 stderr에
-원인을 출력한 뒤 non-zero로 종료합니다. source snapshot에서 사라진 메시지는
-삭제 event로 내보내지 않습니다. 이후 같은 `(account_hash, chat_id, message_id)`가
-다시 보이면 새 삽입처럼 처리됩니다.
-
-제한:
-
-- KakaoTalk 로컬 DB는 read-only로 열고, 쓰기는 katok의 로컬 아카이브에만 합니다.
-- `watch`와 `watch --select` 자체는 KakaoTalk UI를 조작하지 않으므로 방을 열거나 읽음 상태를 바꾸지 않습니다.
-  단, katok 아카이브는 로컬에 남으므로 원본 앱에서 사라진 메시지를 그대로 보관할 수
-  있습니다.
-- 사람용 출력도 터미널 scrollback이나 사용자가 직접 저장한 로그에는 남을 수 있습니다.
-  디버깅할 때 실제 메시지 본문을 붙여넣지 마십시오.
-- `watch` 출력은 local stdout의 text 또는 JSONL입니다. webhook, cloud sync, login item,
-  launch agent 같은 원격 전송이나 detached·숨은·상주 monitoring은 만들지 않습니다.
-- `--poll-ms`는 250ms부터 60s까지로 제한합니다. 더 즉각적인 알림이 필요해도
-  KakaoTalk 앱이나 로컬 DB에 부담을 주는 공격적인 polling은 피하세요.
-- `watch --reply`는 반복 전송 기능이 아닙니다. 사람이 foreground prompt에
-  메시지 한 줄을 직접 입력하고 Enter로 확인하며 `--accept-use-policy`를 붙인
-  경우에만 공식 macOS 앱 UI 경로를 한 번 사용합니다. 더 조심스럽게
-  확인하려면 아래의 `katok send --dry-run`을 먼저 쓰세요. stdin이 terminal이
-  아니면 시작 전에 거절하므로 pipe, redirect, unattended input으로는 답장할 수 없습니다.
-- `watch --reply --reply-no-open`은 내부적으로 `katok send --no-open --background-only`를
-  사용합니다. 이미 열린 고정 대상에 대한 비활성 Accessibility 시도만 허용하고,
-  확인 실패 시 curtain, 앱 활성화/raise, 방 열기, global-key fallback 전에 닫힌 채로
-  실패합니다.
-- 이미지와 파일 메시지는 텍스트가 없는 경우 stream의 메시지 event로 나오지 않을
-  수 있습니다.
-
-## 메시지 전송
-
-전송은 되돌릴 수 없고 다른 사람에게 도달할 수 있습니다. 먼저 대상 방만
-확인하는 `--dry-run`을 사용하십시오.
-
-```bash
-katok send --chat <chat-id> --dry-run --json
-katok send --room "정확한 방 이름" --dry-run --json
-```
-
-실제 텍스트·이미지 전송 또는 초안 입력에는
-[`ACCEPTABLE_USE_POLICY.md`](ACCEPTABLE_USE_POLICY.md)와
-[`DISCLAIMER.md`](DISCLAIMER.md)를 읽었다는 명시적 확인이 필요합니다.
-
-```bash
-katok send --chat <chat-id> --text "확인한 메시지" --accept-use-policy --json
-katok send --chat <chat-id> --text "확인한 메시지" --no-open --background-only --accept-use-policy --json
-katok send --chat <chat-id> --image ./photo.jpg --accept-use-policy --json
-katok send --chat <chat-id> --text "검토할 초안" --draft --accept-use-policy --json
-```
-
-`--background-only`는 `--no-open`이 필요하며 텍스트 전송 전용입니다. 이미 열린 대상
-창의 compose box에 접근해 PID 대상으로 Enter를 보내는 비활성 Accessibility 경로만
-실행합니다. 기존 compose text가 있거나 비어 있다고 확인할 수 없으면 덮어쓰기 전에
-거절하며, 입력한 text가 그대로 있는지 다시 확인한 뒤에만 Enter를 한 번 보냅니다.
-KakaoTalk가 수락했다고 compose box 비움으로 확인되지 않으면 메시지를
-보냈다고 보고하지 않고, curtain 생성이나 앱 활성화/raise 같은 가시적 fallback을
-호출하지 않습니다. 이 플래그가 없는 standalone `katok send`는 기존의 보호된 visible
-fallback 동작을 유지합니다.
-`background-only`의 `unconfirmed` 결과는 자동 재시도되지 않습니다. 첫 시도의 수락을
-관측하지 못했을 뿐일 수 있으므로 수동 재시도 전에는 대상 채팅을 직접 확인하십시오.
-
-`--accept-use-policy`는 법률 준수나 카카오의 승인을 보증하지 않습니다. 불법
-스팸, 사칭·계정 도용, 신고·차단·거부 이후의 연락, 스토킹·괴롭힘, 반복·대량·
-무인 전송, 개인정보 침해 및 보호조치 우회에는 사용할 수 없습니다. 업무용
-광고·알림은 카카오톡 채널, 비즈메시지, 알림톡 등 목적에 맞는 공식 제품을
-사용하십시오.
-
-이 구현의 네트워크 경계는 다음과 같습니다.
-
-- `katok send` 자체는 HTTP, WebSocket, 소켓 또는 카카오 원격 비공개
-  프로토콜·비공식 API를 직접 호출하지 않습니다.
-- 로컬 Accessibility, `CGEvent`, pasteboard, AppKit, 로컬 파일과 katok
-  아카이브만 사용합니다.
-- 실제 네트워크 전송은 로그인된 공식 KakaoTalk 앱이 수행합니다.
-- 이 설명은 `send` 경로에 한정됩니다. `media` 명령의 presigned CDN 다운로드
-  및 최초 모델 artifact 준비 등 다른 기능은 네트워크를 사용할 수 있습니다.
-
-## CLI 명령 요약
-
-```bash
-katok doctor --json
-katok source chats --source macos --json
-katok sync --source macos --json
-katok sync --json
-katok watch --source macos --poll-ms 2000
-katok index --json
-katok search keyword "보고서" --json
-katok search bm25 "보고서" --json
-katok search semantic "회의 보고서" --json
-katok chunk get <chunk-id> --json
-katok chunk context <chunk-id> --json
-katok chunk parent <chunk-id> --json
-katok transcript --chat <chat-id> --json
-katok transcript --chat <chat-id> --since 2026-07-20T00:00:00+09:00 --json
-katok media get --chat <chat-id> --no-cdn --json
-katok wipe-index --yes --json
-katok send --chat <chat-id> --dry-run --json
-katok send --chat <chat-id> --text "메시지" --accept-use-policy --json
-```
-
-`katok transcript`는 한 채팅방에서 실제로 오간 말을 시간 순서대로 Markdown 파일로 내보냅니다. 검색이 "어떤 chunk가 관련 있나"에 답한다면 이 명령은 "무슨 말이 오갔나"에 답하므로, 방 하나를 밀린 채로 따라 읽을 때 씁니다. 라이브 카카오톡 DB가 아니라 아카이브를 읽으므로 최근 대화가 필요하면 `sync`를 먼저 실행합니다. 범위에 메시지가 없으면 파일을 만들지 않고, 파일 이름에 message id 범위가 들어가므로 나중 실행이 이전 결과를 덮어쓰지 않습니다. 카카오톡 시스템 메시지(입장·퇴장·초대)는 아카이브에는 남고 transcript에서만 빠집니다.
-
-권한 진단이 필요할 때만:
-
-```bash
-katok doctor --macos-probe --json
-```
-
-`doctor --json`의 freshness 예:
-
-```json
-{
-  "freshness": {
-    "last_sync": {
-      "completed_at": "2026-06-15T05:00:00Z",
-      "source": "macos",
-      "total_messages": 12345,
-      "chunks": 6789
-    },
-    "last_index": {
-      "completed_at": "2026-06-15T05:03:00Z",
-      "embedder": "embeddinggemma/local",
-      "vectorstore": "local",
-      "semantic_units": "parent_windows",
-      "embedded_texts": 42
-    },
-    "recommendation": {
-      "sync_before_search": false,
-      "index_before_semantic_search": false,
-      "reason": "archive and semantic index have completed at least once; re-run sync/index when freshness matters"
-    }
-  }
-}
-```
-
-## 개인정보와 로컬 파일
-
-이 프로젝트가 다루는 파일은 모두 민감 정보로 취급합니다.
-
-- 카카오톡 DB 경로와 SQLCipher 관련 정보
-- 정규화된 메시지 아카이브
-- semantic documents
-- embedding cache와 vector index
-- 검색 근거와 로그
-
-생성된 아카이브, 인덱스, cache, 로그는 git에 넣지 않습니다. 자동화 테스트는 합성 fixture만 사용합니다. 실제 카카오톡 smoke test는 수동으로만 수행하고, 사용자가 명시하지 않은 대화 원문은 출력하지 않습니다.
+- 모든 대화 데이터는 로컬(`~/Library/Application Support/katok` — 이전 이름의
+  디렉터리를 그대로 사용) SQLCipher 암호화 아카이브에 저장됩니다.
+- 텔레메트리가 없고, 대화 내용이 네트워크로 전송되지 않습니다. 의미 검색의
+  임베딩도 로컬 모델로 계산됩니다.
+- 이 저장소는 공개입니다. 실제 대화에서 유래한 어떤 값도 커밋되지 않으며,
+  테스트는 합성 fixture만 사용합니다 (`scripts/verify_release_config.py`의
+  프라이버시 오라클이 이를 계속 검사합니다).
 
 ## 개발
 
 ```bash
 cargo fmt --all -- --check
-cargo build
-cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
 python3 scripts/verify_release_config.py
 ```
 
-## 참고 프로젝트
+## 라이선스
 
-아래 프로젝트들은 조사 과정의 참고 자료입니다. 현재 `katok`의 주 경로는 macOS 로컬 DB를 개인 Mac 안의 아카이브, BM25 index, EmbeddingGemma vector index로 바꾸는 방식입니다.
-
-- `silver-flight-group/kakaocli`: macOS local DB read/search/sync CLI.
-- `JungHoonGhae/openkakao-cli`: local DB read/search plus LOCO-oriented flows.
-- `xistoh162108/kakaotalk_analyzer`: export CSV analysis with embedding and SPLADE ideas.
-- `teddylee777/kakaotalk-gpt`: export txt/csv RAG with FAISS/Chroma retrievers.
-- `sanggubot/doppelganger-gpt`: KakaoTalk txt to Chroma example.
-- `uoneway/kakaotalk_msg_preprocessor`: exported txt parser.
-- `claudianus/kakaotalk-chat-analyzer`: CSV export to anonymized HTML report.
+MIT. 이 프로젝트는 [NomaDamas/katok](https://github.com/NomaDamas/katok)을 포크해
+리브랜딩한 개인 빌드입니다.

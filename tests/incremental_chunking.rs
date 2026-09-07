@@ -3,7 +3,7 @@
 //! This is the safety net for making sync incremental: the speedup is only worth having if the
 //! archive it leaves behind is indistinguishable from the one the slow path built.
 
-use katok::{
+use lazykatok::{
     archive::{
         Archive, DELETE_CHAT_CHUNKS_STATEMENTS, RAW_MESSAGES_FOR_CHAT_SINCE_QUERY,
         SCOPED_REF_REBUILD_STATEMENTS, TAIL_REBUILD_START_QUERY,

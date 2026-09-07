@@ -1,7 +1,7 @@
 //! Transcript export has to be safe to re-run: the old Python capture it replaces could clobber
 //! an earlier capture, and a run that found nothing new had to leave existing files alone.
 
-use katok::{archive::Archive, transcript::export_transcript, types::RawMessage};
+use lazykatok::{archive::Archive, transcript::export_transcript, types::RawMessage};
 
 fn message(id: &str, chat: &str, seconds: i64, text: &str) -> RawMessage {
     message_of_type(id, chat, seconds, text, "text")
