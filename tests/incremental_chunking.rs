@@ -1053,12 +1053,12 @@ fn prefix_snapshot(conn: &Connection, cut: &str) -> Vec<String> {
 }
 
 #[test]
-fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages() {
+fn a_large_single_room_tail_matches_a_full_rebuild_and_limits_rewrites() {
     // The shape the five parent-plan rounds never built: one room with 100k+ messages.
     // Equivalence: ground-truth full rebuild of only the recompute tail (last burst + append) plus
-    // a frozen-prefix check — a whole-room full rebuild of 100k is minutes and is not required to
-    // pin the cut rule. Cost: scoped one-message append on the 100k room vs a 200-message room.
-    // Release/CI default is 100k (the shape that hid this bug). Debug defaults to 5k so plain
+    // a frozen-prefix check — another whole-room rebuild is not required to
+    // pin the cut rule. Write scope: append one message without rewriting the whole room.
+    // Release defaults to 100k (the shape that hid this bug). Debug defaults to 5k so plain
     // `cargo test` stays usable; override either with KATOK_LARGE_CHAT_N.
     let n: usize = std::env::var("KATOK_LARGE_CHAT_N")
         .ok()
@@ -1086,11 +1086,13 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
     large
         .in_transaction(|| large.sync_messages(&messages[..messages.len() - 1]))
         .expect("sync large seed");
+    let changes_before_whole = large.connection().total_changes();
     let whole_started = std::time::Instant::now();
     large
         .in_transaction(|| rebuild_chunks_for_chats(&large, settings(), &[whole_chat("L")]))
         .expect("seed whole-chat rebuild");
     let whole_seed_ms = whole_started.elapsed().as_millis();
+    let whole_seed_writes = large.connection().total_changes() - changes_before_whole;
 
     let cut = messages[last_burst_start].timestamp.to_rfc3339();
     let resolved = large
@@ -1114,6 +1116,7 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
         })
         .expect("truth full rebuild of tail only");
 
+    let changes_before_append = large.connection().total_changes();
     let started = std::time::Instant::now();
     large
         .in_transaction(|| {
@@ -1122,6 +1125,7 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
         })
         .expect("scoped append");
     let large_scoped_ms = started.elapsed().as_millis();
+    let large_scoped_writes = large.connection().total_changes() - changes_before_append;
 
     assert_eq!(
         tail_snapshot(large.connection(), Some(&cut)),
@@ -1153,17 +1157,19 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
         .expect("ref pass only");
     let ref_only_ms = ref_started.elapsed().as_millis();
 
-    // Cost claim: scoped one-message append is far cheaper than whole-chat on the same room.
-    // After chunk indexes + scoped refs, residual should track the touched tail rather than
-    // archive size; we still only require scoped ≪ whole-chat here (step-4 measures the rest).
+    // Pin write scope independently of Windows durable-commit latency and CI scheduling.
+    // SQLite counts row-change operations, including counted FTS shadow-table changes.
+    // This fixture-specific ratio does not promise fewer physical disk writes, a wall-time
+    // speedup, or constant read work: reply references still scan the touched room.
     assert!(
-        large_scoped_ms * 10 < whole_seed_ms,
-        "scoped append ({large_scoped_ms}ms) must be at least 10x faster than whole-chat seed \
-         ({whole_seed_ms}ms) on a {n}-message room"
+        large_scoped_writes > 0 && large_scoped_writes * 10 < whole_seed_writes,
+        "scoped append ({large_scoped_writes} row changes) must write less than one tenth of \
+         whole-chat seed rows ({whole_seed_writes} changes) on a {n}-message room"
     );
     eprintln!(
         "large_room_cost n={n} whole_seed_ms={whole_seed_ms} large_scoped_ms={large_scoped_ms} \
-         ref_only_ms={ref_only_ms} speedup={:.1}x",
+         whole_seed_writes={whole_seed_writes} large_scoped_writes={large_scoped_writes} \
+         ref_only_ms={ref_only_ms} observed_speedup={:.1}x",
         whole_seed_ms as f64 / large_scoped_ms.max(1) as f64
     );
 }
