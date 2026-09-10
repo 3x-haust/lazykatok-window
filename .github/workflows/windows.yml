@@ -27,6 +27,8 @@ jobs:
         with:
           arch: x64
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint

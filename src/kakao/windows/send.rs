@@ -7,7 +7,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     System::Threading::*,
-    UI::{Input::KeyboardAndMouse::VK_RETURN, WindowsAndMessaging::*},
+    UI::{
+        Input::KeyboardAndMouse::{IsWindowEnabled, VK_RETURN},
+        WindowsAndMessaging::*,
+    },
 };
 
 struct WindowList {
