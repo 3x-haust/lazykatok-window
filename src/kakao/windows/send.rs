@@ -138,6 +138,9 @@ pub fn run(
     dry_run: bool,
     draft: bool,
 ) -> Result<serde_json::Value> {
+    if !dry_run {
+        validate_text(body.ok_or_else(|| source_error("A text body is required"))?)?;
+    }
     let (pid, _process) = super::native::process()?;
     let _lock = acquire(pid)?;
     let before = super::read()?;
@@ -188,11 +191,6 @@ pub fn run(
         return Ok(serde_json::json!({"resolved":true,"sent":false,"chat_id":target.chat_id}));
     }
     let body = body.ok_or_else(|| source_error("A text body is required"))?;
-    if body.trim().is_empty() || body.contains('\0') || body.encode_utf16().count() > 10000 {
-        return Err(source_error(
-            "Text must contain 1–10000 UTF-16 units and no NUL character",
-        ));
-    }
     if !text(edit)?.is_empty() {
         return Err(source_error(
             "The KakaoTalk compose box already contains a draft; it was not changed",

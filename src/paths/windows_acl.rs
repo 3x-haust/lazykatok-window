@@ -8,6 +8,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
+    Storage::FileSystem::FILE_ALL_ACCESS,
     System::Threading::*,
 };
 
@@ -66,7 +67,9 @@ pub(super) fn protect(path: &Path, directory: bool) -> Result<()> {
         }
         let sid = (*(data.as_ptr().cast::<TOKEN_USER>())).User.Sid;
         let entry = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: GENERIC_ALL,
+            // File-specific rights apply to both this directory and its children.
+            // Generic rights cause Windows to split effective/inherit-only ACEs.
+            grfAccessPermissions: FILE_ALL_ACCESS,
             grfAccessMode: SET_ACCESS,
             grfInheritance: if directory {
                 SUB_CONTAINERS_AND_OBJECTS_INHERIT

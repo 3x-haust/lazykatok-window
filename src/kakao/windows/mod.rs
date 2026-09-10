@@ -18,6 +18,19 @@ fn source_error(message: &str) -> Error {
     Error::Kakao(message.to_owned())
 }
 
+/// Validate before reading the application or modifying any compose control.
+pub fn validate_text(body: &str) -> Result<()> {
+    if body.trim().is_empty() {
+        return Err(source_error("refusing to send an empty message"));
+    }
+    if body.contains('\0') || body.encode_utf16().count() > 10000 {
+        return Err(source_error(
+            "Text must contain at most 10000 UTF-16 units and no NUL character",
+        ));
+    }
+    Ok(())
+}
+
 /// Enumerate profiles without guessing which account is currently signed in.
 pub fn discover_profiles(base: &Path) -> Result<Vec<PathBuf>> {
     let mut profiles = Vec::new();

@@ -168,11 +168,13 @@ pub(crate) enum Commands {
         #[arg(long)]
         replay_existing: bool,
     },
-    /// Send, stage, or inspect a KakaoTalk chat through its macOS UI.
+    /// Send, stage, or inspect a KakaoTalk chat through its local UI.
     ///
     /// Unlike every other subcommand this writes rather than reads, and it does so by driving
     /// the running app's UI — there is no supported write path into the local archive. Opening
-    /// a closed room, staging a draft, or sending an image can bring KakaoTalk forward briefly.
+    /// a closed room, staging a draft, or sending an image on macOS can bring KakaoTalk forward.
+    /// Windows supports text in an already-open room with a unique title, using targeted Win32
+    /// controls. Windows does not open rooms, take focus, inject global keys, or send images.
     // This drives the local KakaoTalk UI and is not a Kakao-approved API.
     // Message-affecting modes require an explicit acceptable-use acknowledgement.
     #[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
@@ -181,22 +183,23 @@ pub(crate) enum Commands {
         /// with your own nickname, not "나와의 채팅".
         ///
         /// Names are not unique — several rooms can share one. When they do, the send is
-        /// refused rather than guessed at; use `--chat` instead.
+        /// refused rather than guessed at. Use `--chat` to select an ID; Windows also requires
+        /// the selected room's title to be unique across the account.
         #[arg(
             long,
             required_unless_present_any = ["chat", "list_windows", "list_rooms"]
         )]
         room: Option<String>,
-        /// Address the room by its `chat_id`, as `search` and `chunks` report it.
+        /// Address the room by its `chat_id`, as `source chats` or `search` reports it.
         ///
-        /// Unambiguous: the name and the last-message time are both read from the archive, and
-        /// together they pick the right row even when two rooms share a name.
+        /// macOS resolves the name and last-message time from the archive. Windows resolves
+        /// the current source and requires one already-open window with a unique exact title.
         #[arg(long, conflicts_with = "room")]
         chat: Option<String>,
         /// Message body. Reads stdin when omitted.
         #[arg(long)]
         text: Option<String>,
-        /// Send an image file instead of text. Mutually exclusive with --text.
+        /// Send an image file instead of text (macOS only). Mutually exclusive with --text.
         #[arg(long, conflicts_with = "text")]
         image: Option<PathBuf>,
         /// List the chat windows currently open and exit without sending.
@@ -208,17 +211,19 @@ pub(crate) enum Commands {
         /// Cap for --list-rooms.
         #[arg(long, default_value_t = 40)]
         limit: usize,
-        /// Resolve (and open) the room window but do not send. For verifying targeting safely.
+        /// Resolve the room without sending. macOS may open it; Windows requires it already open.
         #[arg(long)]
         dry_run: bool,
         /// Fail instead of opening the room when its window is closed.
         ///
         /// A text send may still use its protected visible fallback. Add `--background-only` to
         /// forbid every activation, raise, curtain, focus-taking, and global-key fallback too.
+        /// Windows always requires an already-open window and has no visible fallback.
         #[arg(long)]
         no_open: bool,
-        /// Use only the non-activating Accessibility path to an already-open text chat.
+        /// Use only background delivery to an already-open text chat.
         ///
+        /// macOS uses non-activating Accessibility; Windows always uses targeted Win32 controls.
         /// If the background Enter is not confirmed, report it as unconfirmed and stop without a
         /// curtain, activation/raise, room opening, or global fallback key. Also refuses a
         /// non-empty compose box and verifies the intended text immediately before Enter.
@@ -237,17 +242,17 @@ pub(crate) enum Commands {
         background_only: bool,
         /// Leave the message in the compose box for review instead of sending it.
         ///
-        /// Pasted rather than typed, so nothing is delivered until a person presses Enter.
-        /// Needs the screen for a moment, like sending an image does.
+        /// Nothing is submitted until a person presses Enter. macOS may need the screen;
+        /// Windows stages text in the already-open compose control without taking focus.
         #[arg(long, conflicts_with_all = ["image", "dry_run"])]
         draft: bool,
-        /// Take focus immediately instead of waiting for a gap in your typing.
+        /// macOS: take focus immediately instead of waiting for a gap in your typing.
         ///
         /// Only steps that cannot run in the background wait at all — sending an image, and
         /// opening a closed room. Use this when nobody is at the keyboard.
         #[arg(long)]
         take_focus_now: bool,
-        /// Seconds to wait for that gap before giving up and sending nothing.
+        /// macOS: seconds to wait for that gap before giving up and sending nothing.
         #[arg(long, default_value_t = 15, conflicts_with = "take_focus_now")]
         focus_wait: u64,
         /// Confirm that you read and accept ACCEPTABLE_USE_POLICY.md and DISCLAIMER.md.

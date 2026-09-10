@@ -25,6 +25,19 @@ ARM64 instead.
 The Windows CI workflow builds, lints and runs synthetic tests on an x64 Windows
 runner. It does not sign into KakaoTalk or send real messages.
 
+## Portable package
+
+Download the `lazykatok-windows-x64-experimental` artifact from a successful
+Windows port workflow run. Extract the whole archive and open a terminal in its
+`lazykatok-windows-x64` folder. Keep the DLLs beside `lazykatok.exe`: they include
+the app-local Microsoft C++ runtime and any bundled inference runtime libraries.
+`SHA256SUMS.txt` lists the package files and their SHA-256 hashes.
+
+The package is unsigned and experimental. Its smoke test uses a synthetic fixture
+from a directory containing Korean and spaces, with development-tool directories
+removed from `PATH`. A fresh Windows installation still needs separate validation.
+All command examples below work from this extracted folder as well.
+
 ## Read and search
 
 Start KakaoTalk under your own Windows user, sign in, and open the chat list

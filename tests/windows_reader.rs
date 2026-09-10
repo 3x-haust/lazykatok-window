@@ -4,6 +4,17 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 
 #[test]
+fn windows_text_validation_rejects_invalid_input_before_accessing_an_app() {
+    use lazykatok::kakao::windows::validate_text;
+    for text in ["", " \r\n\t", "synthetic\0text"] {
+        assert!(validate_text(text).is_err());
+    }
+    assert!(validate_text("한글\n둘째 줄 😀").is_ok());
+    assert!(validate_text(&"😀".repeat(5000)).is_ok());
+    assert!(validate_text(&"😀".repeat(5001)).is_err());
+}
+
+#[test]
 fn windows_profile_discovery_keeps_accounts_separate() {
     let root = tempfile::tempdir().unwrap();
     for name in ["synthetic-a", "synthetic-b"] {
