@@ -1081,11 +1081,14 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
     // archive-wide reply/parent-ref pass). The seed rebuild's wall time is the whole-chat baseline.
     let large_dir = tempfile::tempdir().expect("tempdir");
     let large = Archive::open(&large_dir.path().join("archive.sqlite3")).expect("open archive");
+    // Match production sync's transaction boundary. Autocommitting every fixture row
+    // spends thousands of durable file flushes on Windows before the measurement starts.
     large
-        .sync_messages(&messages[..messages.len() - 1])
+        .in_transaction(|| large.sync_messages(&messages[..messages.len() - 1]))
         .expect("sync large seed");
     let whole_started = std::time::Instant::now();
-    rebuild_chunks_for_chats(&large, settings(), &[whole_chat("L")])
+    large
+        .in_transaction(|| rebuild_chunks_for_chats(&large, settings(), &[whole_chat("L")]))
         .expect("seed whole-chat rebuild");
     let whole_seed_ms = whole_started.elapsed().as_millis();
 
@@ -1104,14 +1107,20 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
     let tail_msgs = messages[last_burst_start..].to_vec();
     let truth_dir = tempfile::tempdir().expect("tempdir");
     let truth = Archive::open(&truth_dir.path().join("archive.sqlite3")).expect("open archive");
-    truth.sync_messages(&tail_msgs).expect("sync truth tail");
-    rebuild_chunks(&truth).expect("truth full rebuild of tail only");
+    truth
+        .in_transaction(|| {
+            truth.sync_messages(&tail_msgs)?;
+            rebuild_chunks(&truth)
+        })
+        .expect("truth full rebuild of tail only");
 
     let started = std::time::Instant::now();
-    let append = large
-        .sync_messages(&messages[messages.len() - 1..])
-        .expect("sync append");
-    rebuild_chunks_for_chats(&large, settings(), &append.touched_chats).expect("scoped append");
+    large
+        .in_transaction(|| {
+            let append = large.sync_messages(&messages[messages.len() - 1..])?;
+            rebuild_chunks_for_chats(&large, settings(), &append.touched_chats)
+        })
+        .expect("scoped append");
     let large_scoped_ms = started.elapsed().as_millis();
 
     assert_eq!(
@@ -1140,7 +1149,7 @@ fn a_large_single_room_tail_matches_a_full_rebuild_and_cost_tracks_new_messages(
     // sync no longer pays this; it rebuilds refs only for the touched chats.
     let ref_started = std::time::Instant::now();
     large
-        .rebuild_reply_and_parent_refs()
+        .in_transaction(|| large.rebuild_reply_and_parent_refs())
         .expect("ref pass only");
     let ref_only_ms = ref_started.elapsed().as_millis();
 
