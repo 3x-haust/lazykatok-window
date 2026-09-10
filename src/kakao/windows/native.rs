@@ -274,7 +274,7 @@ fn scan(handle: HANDLE, files: &[PathBuf], cache: &mut KeyCache) -> Result<()> {
                             continue;
                         }
                         // Retain only a fingerprint for deduplication, never all candidate keys.
-                        let fingerprint: [u8; 32] = Sha256::digest(&*candidate).into();
+                        let fingerprint: [u8; 32] = Sha256::digest(candidate.as_slice()).into();
                         if !seen.insert(fingerprint) {
                             continue;
                         }
