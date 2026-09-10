@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "lazykatok",
+    version,
     about = "lazykatok: local KakaoTalk terminal client"
 )]
 pub(crate) struct Cli {

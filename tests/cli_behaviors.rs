@@ -15,6 +15,21 @@ fn parse_jsonl(bytes: &[u8]) -> Vec<serde_json::Value> {
 }
 
 #[test]
+fn cli_version_matches_the_package_without_creating_user_data() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = dir.path().join("unused-data");
+    Command::cargo_bin("lazykatok")
+        .expect("lazykatok binary")
+        .arg("--data-dir")
+        .arg(&data)
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(format!("lazykatok {}\n", env!("CARGO_PKG_VERSION")));
+    assert!(!data.exists(), "version must not initialize user data");
+}
+
+#[test]
 fn cli_help_identifies_katok_when_invoked() {
     let mut cmd = Command::cargo_bin("lazykatok").expect("lazykatok binary");
     cmd.arg("--help")
