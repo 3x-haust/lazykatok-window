@@ -116,7 +116,7 @@ pub(crate) enum Commands {
         #[arg(
             long,
             value_name = "SOURCE",
-            help = "Source adapter: macos, kakaocli, or fixture. Defaults to config"
+            help = "Source adapter: windows, macos, kakaocli, or fixture. Defaults to config"
         )]
         source: Option<String>,
         #[arg(
@@ -175,7 +175,7 @@ pub(crate) enum Commands {
     /// a closed room, staging a draft, or sending an image can bring KakaoTalk forward briefly.
     // This drives the local KakaoTalk UI and is not a Kakao-approved API.
     // Message-affecting modes require an explicit acceptable-use acknowledgement.
-    #[cfg(all(target_os = "macos", feature = "private-send"))]
+    #[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
     Send {
         /// Title of the chat as the chat list shows it. Note the self-chat window is titled
         /// with your own nickname, not "나와의 채팅".

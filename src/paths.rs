@@ -2,11 +2,20 @@ use crate::{Error, Result};
 use std::path::PathBuf;
 
 pub fn default_data_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or(Error::HomeDirUnavailable)?;
-    Ok(home
-        .join("Library")
-        .join("Application Support")
-        .join("katok"))
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Ok(dirs::data_local_dir()
+            .ok_or(Error::HomeDirUnavailable)?
+            .join("katok"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir().ok_or(Error::HomeDirUnavailable)?;
+        Ok(home
+            .join("Library")
+            .join("Application Support")
+            .join("katok"))
+    }
 }
 
 pub fn ensure_private_dir(path: &std::path::Path) -> Result<()> {

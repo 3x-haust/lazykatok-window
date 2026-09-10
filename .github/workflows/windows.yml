@@ -1,0 +1,54 @@
+name: Windows port
+
+on:
+  push:
+    branches: [windows-port]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64 / Rust 1.91
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      KATOK_EMBEDDER: local-test
+      OPENSSL_RUST_USE_NASM: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Synthetic tests
+        run: cargo test --locked --all-targets
+      - name: Package check
+        run: cargo publish --dry-run --locked
+      - name: Release configuration
+        run: python scripts/verify_release_config.py
+      - name: Build x64 executable
+        run: cargo build --locked --release
+      - name: Stage portable build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/lazykatok-windows-x64 | Out-Null
+          Copy-Item target/release/lazykatok.exe,README.md,LICENSE,THIRD_PARTY_NOTICES.md,ACCEPTABLE_USE_POLICY.md,DISCLAIMER.md dist/lazykatok-windows-x64
+          Get-ChildItem target/release -Filter *.dll | Copy-Item -Destination dist/lazykatok-windows-x64
+          Copy-Item docs/windows.md dist/lazykatok-windows-x64
+          Get-ChildItem dist/lazykatok-windows-x64 -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-File dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lazykatok-windows-x64-experimental
+          path: dist/
+          retention-days: 14

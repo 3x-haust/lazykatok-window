@@ -37,9 +37,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(all(target_os = "macos", feature = "private-send"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
 use std::ffi::OsString;
-#[cfg(all(target_os = "macos", feature = "private-send"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
 use std::process::{Command as ProcessCommand, Stdio};
 
 mod chunk_commands;
@@ -574,7 +574,7 @@ pub(crate) fn command_requests_json(command: &Commands) -> bool {
         Commands::Permissions { command } => match command {
             PermissionsCommand::Macos { json, .. } => *json,
         },
-        #[cfg(all(target_os = "macos", feature = "private-send"))]
+        #[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
         Commands::Send { json, .. } => *json,
     }
 }
@@ -674,7 +674,7 @@ pub(crate) fn run(
             &data_dir,
         ),
         Commands::WipeIndex { yes, json } => run_wipe_index(yes, json, &semantic_dir),
-        #[cfg(all(target_os = "macos", feature = "private-send"))]
+        #[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
         Commands::Send {
             room,
             chat,
@@ -1581,7 +1581,7 @@ where
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "private-send"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
 fn send_reply_to_chat(chat_id: &str, body: &str, no_open: bool, data_dir: &Path) -> Result<usize> {
     let mut command =
         ProcessCommand::new(std::env::current_exe().context("resolve lazykatok binary")?);
@@ -1611,7 +1611,7 @@ fn send_reply_to_chat(chat_id: &str, body: &str, no_open: bool, data_dir: &Path)
     Ok(body.chars().count())
 }
 
-#[cfg(all(target_os = "macos", feature = "private-send"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
 fn reply_send_args(chat_id: &str, no_open: bool, data_dir: &Path) -> Vec<OsString> {
     let mut args = vec![
         OsString::from("--data-dir"),
@@ -1632,7 +1632,7 @@ fn reply_send_args(chat_id: &str, no_open: bool, data_dir: &Path) -> Vec<OsStrin
     args
 }
 
-#[cfg(all(target_os = "macos", feature = "private-send"))]
+#[cfg(all(any(target_os = "macos", windows), feature = "private-send"))]
 fn send_child_error_detail(status: impl std::fmt::Display, stdout: &[u8], stderr: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
@@ -1663,14 +1663,14 @@ fn send_child_error_detail(status: impl std::fmt::Display, stdout: &[u8], stderr
     format!("lazykatok send failed with {status}")
 }
 
-#[cfg(not(all(target_os = "macos", feature = "private-send")))]
+#[cfg(not(all(any(target_os = "macos", windows), feature = "private-send")))]
 fn send_reply_to_chat(
     _chat_id: &str,
     _body: &str,
     _no_open: bool,
     _data_dir: &Path,
 ) -> Result<usize> {
-    anyhow::bail!("watch --reply requires the macOS private-send feature")
+    anyhow::bail!("watch --reply requires the private-send feature on Windows or macOS")
 }
 
 fn sync_watch_messages(
@@ -1900,6 +1900,96 @@ fn run_send(
     )
 }
 
+#[cfg(all(windows, feature = "private-send"))]
+#[allow(clippy::too_many_arguments)]
+fn run_send(
+    room: Option<String>,
+    chat: Option<String>,
+    text: Option<String>,
+    image: Option<PathBuf>,
+    list_windows: bool,
+    list_rooms: bool,
+    limit: usize,
+    dry_run: bool,
+    _no_open: bool,
+    _background_only: bool,
+    draft: bool,
+    _take_focus_now: bool,
+    _focus_wait: u64,
+    accept_use_policy: bool,
+    json: bool,
+    _archive_path: &Path,
+) -> Result<()> {
+    use lazykatok::kakao::windows;
+    use std::io::Read;
+    if list_windows {
+        return print_payload(
+            json,
+            &serde_json::json!({"open_windows":windows::send::open_window_titles()?}),
+        );
+    }
+    if list_rooms {
+        let mut output = windows::read()?;
+        output
+            .chats
+            .sort_by_key(|r| std::cmp::Reverse(r.last_message_at));
+        output.chats.truncate(limit);
+        return print_payload(
+            json,
+            &serde_json::json!({"rooms":output.chats,"source_coverage":{"available_chats":output.available,"unavailable_chats":output.locked}}),
+        );
+    }
+    if image.is_some() {
+        anyhow::bail!(
+            "Windows image sending is not yet supported; use KakaoTalk for this operation"
+        );
+    }
+    if !dry_run && !accept_use_policy {
+        anyhow::bail!("refusing to continue without --accept-use-policy; read ACCEPTABLE_USE_POLICY.md and DISCLAIMER.md");
+    }
+    let body = if dry_run {
+        None
+    } else {
+        let mut body = match text {
+            Some(s) => s,
+            None => {
+                let mut s = String::new();
+                std::io::stdin().take(65537).read_to_string(&mut s)?;
+                s
+            }
+        };
+        if body.len() > 65536 {
+            anyhow::bail!("Message input is too large");
+        }
+        if body.ends_with('\n') {
+            body.pop();
+            if body.ends_with('\r') {
+                body.pop();
+            }
+        }
+        Some(body)
+    };
+    let result = windows::send::run(
+        room.as_deref(),
+        chat.as_deref(),
+        body.as_deref(),
+        dry_run,
+        draft,
+    )?;
+    print_payload(json, &result)
+}
+
+fn windows_probe_payload() -> serde_json::Value {
+    #[cfg(windows)]
+    {
+        lazykatok::kakao::windows::probe_status()
+    }
+    #[cfg(not(windows))]
+    {
+        serde_json::json!({"available":false,"reason":"Windows source requires Windows"})
+    }
+}
+
 fn run_permissions(command: PermissionsCommand) -> Result<()> {
     match command {
         PermissionsCommand::Macos {
@@ -1928,6 +2018,9 @@ fn run_doctor(
         "freshness": freshness::load(&data_dir, &archive_path, &semantic_dir)?,
         "local_first": true,
         "macos": cfg!(target_os = "macos"),
+        "platform": std::env::consts::OS,
+        "architecture": std::env::consts::ARCH,
+        "windows_source": windows_probe_payload(),
         "source_adapter": {
             "configured": config.source_adapter,
             "fixture": "ok",
@@ -2693,6 +2786,14 @@ fn run_sync(
     let adapter = adapter_for_source(source, path, data_dir)?;
     let read_started = Instant::now();
     let messages = adapter.messages().context("read source messages")?;
+    let coverage = adapter.coverage();
+    if (prune_preview || prune_deleted)
+        && coverage.as_ref().is_some_and(|c| c.unavailable_chats > 0)
+    {
+        anyhow::bail!(
+            "Cannot reconcile deletions from an incomplete Windows source; open all rooms first"
+        );
+    }
     let read_source = read_started.elapsed().as_millis();
     let archive = Archive::open(archive_path).context("open archive")?;
     // Message upserts and the chunk rebuild are one unit: chunks derived from half-written
@@ -2801,6 +2902,11 @@ fn run_sync(
                 serde_json::to_value(&pruned).context("serialize pruned")?,
             );
         }
+        return print_payload(json, &payload);
+    }
+    if let Some(coverage) = coverage {
+        let mut payload = serde_json::to_value(&report)?;
+        payload["source_coverage"] = serde_json::to_value(&coverage)?;
         return print_payload(json, &payload);
     }
     print_payload(json, &report)

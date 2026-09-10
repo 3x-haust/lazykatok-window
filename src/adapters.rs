@@ -7,6 +7,53 @@ use std::process::Command;
 pub trait SourceAdapter {
     fn chats(&self) -> Result<Vec<ChatSummary>>;
     fn messages(&self) -> Result<Vec<RawMessage>>;
+    fn coverage(&self) -> Option<SourceCoverage> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SourceCoverage {
+    pub available_chats: usize,
+    pub unavailable_chats: usize,
+}
+
+#[cfg(windows)]
+#[derive(Default)]
+pub struct WindowsAdapter {
+    cached: std::cell::OnceCell<crate::kakao::windows::native::ReadOutput>,
+}
+
+#[cfg(windows)]
+impl WindowsAdapter {
+    fn read(&self) -> Result<&crate::kakao::windows::native::ReadOutput> {
+        if self.cached.get().is_none() {
+            let _ = self.cached.set(crate::kakao::windows::read()?);
+        }
+        Ok(self.cached.get().expect("successful source read"))
+    }
+}
+#[cfg(windows)]
+impl SourceAdapter for WindowsAdapter {
+    fn chats(&self) -> Result<Vec<ChatSummary>> {
+        Ok(self.read()?.chats.clone())
+    }
+    fn messages(&self) -> Result<Vec<RawMessage>> {
+        let output = self.read()?;
+        if output.available == 0 && output.locked > 0 {
+            return Err(crate::Error::Kakao(
+                "No Windows room databases are readable. Open a room in KakaoTalk and retry."
+                    .into(),
+            ));
+        }
+        Ok(output.messages.clone())
+    }
+    fn coverage(&self) -> Option<SourceCoverage> {
+        self.cached.get().map(|o| SourceCoverage {
+            available_chats: o.available,
+            unavailable_chats: o.locked,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

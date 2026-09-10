@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+#[cfg(unix)]
 use std::io::Write;
 
 #[test]
@@ -88,8 +89,8 @@ exit 1
 }
 
 #[cfg(not(unix))]
-fn write_failing_kakaocli(_dir: &std::path::Path) {
-    panic!("kakaocli adapter tests require unix shell semantics");
+fn write_failing_kakaocli(dir: &std::path::Path) {
+    write_windows_helper(dir, true);
 }
 
 #[cfg(unix)]
@@ -123,11 +124,34 @@ esac
 }
 
 #[cfg(not(unix))]
-fn write_fake_kakaocli(_dir: &std::path::Path) {
-    panic!("kakaocli adapter tests require unix shell semantics");
+fn write_fake_kakaocli(dir: &std::path::Path) {
+    write_windows_helper(dir, false);
 }
 
-fn fake_path(dir: &std::path::Path) -> String {
-    let existing = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{existing}", dir.display())
+fn fake_path(dir: &std::path::Path) -> std::ffi::OsString {
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).expect("join executable search path")
+}
+
+#[cfg(not(unix))]
+fn write_windows_helper(dir: &std::path::Path, failure: bool) {
+    let source = dir.join("helper.rs");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/kakaocli_helper.rs");
+    std::fs::copy(fixture, &source).expect("copy helper source");
+    let mut compiler = std::process::Command::new("rustc");
+    compiler
+        .arg(&source)
+        .arg("-o")
+        .arg(dir.join("kakaocli.exe"));
+    if failure {
+        compiler.arg("--cfg").arg("failure");
+    }
+    assert!(compiler
+        .status()
+        .expect("compile synthetic adapter helper")
+        .success());
 }

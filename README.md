@@ -1,8 +1,9 @@
 # lazykatok
 
 로컬 우선(local-first) 카카오톡 터미널 클라이언트. 방 목록을 최신순으로 골라 들어가는
-실시간 대화 TUI, 로컬 암호화 아카이브, 키워드·BM25·의미 검색을 하나의 CLI로 제공합니다.
-Apple Silicon macOS 전용.
+실시간 대화 TUI, 로컬 아카이브, 키워드·BM25·의미 검색을 하나의 CLI로 제공합니다.
+Apple Silicon macOS를 지원하며, 이 포크에서 **Windows x64 버전을 개발 중**입니다.
+Windows 빌드·실행 방법과 아직 지원하지 않는 기능은 [Windows 안내](docs/windows.md)를 참고하세요.
 
 [![CI](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml/badge.svg)](https://github.com/changeroa/lazykatok/actions/workflows/ci.yml)
 
@@ -15,7 +16,7 @@ Apple Silicon macOS 전용.
 - **답장 전송** — TUI에서 Enter로 카카오톡 앱에 실제 전송(macOS Accessibility 경로).
   전송 중에도 입력 가능하고, 동시 전송은 안전을 위해 하나로 직렬화됩니다.
 - **로컬 검색** — 키워드 / BM25 / 임베딩 의미 검색. 대화 데이터는 전부 로컬
-  SQLCipher 아카이브에 저장되고 네트워크로 나가지 않습니다.
+  SQLite 아카이브에 저장됩니다. 아카이브 자체는 암호화되지 않으며, 검색 과정에서 대화가 외부로 전송되지 않습니다.
 
 ## 요구 사항
 
@@ -102,7 +103,8 @@ lazykatok transcript --chat <chat_id> --from 2026-08-01 --to 2026-08-31 --out ex
 ## 프라이버시
 
 - 모든 대화 데이터는 로컬(`~/Library/Application Support/katok` — 이전 이름의
-  디렉터리를 그대로 사용) SQLCipher 암호화 아카이브에 저장됩니다.
+  디렉터리를 그대로 사용, Windows는 `%LOCALAPPDATA%\katok`)에 저장됩니다.
+  원본 카톡 DB는 복호화해 읽지만, 파생 아카이브와 검색 인덱스 자체는 암호화하지 않습니다.
 - 텔레메트리가 없고, 대화 내용이 네트워크로 전송되지 않습니다. 의미 검색의
   임베딩도 로컬 모델로 계산됩니다.
 - 이 저장소는 공개입니다. 실제 대화에서 유래한 어떤 값도 커밋되지 않으며,
