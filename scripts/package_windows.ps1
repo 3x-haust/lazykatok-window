@@ -17,6 +17,7 @@ if (Test-Path $OutputDirectory) { throw 'Output directory already exists; choose
 $documents = @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','ACCEPTABLE_USE_POLICY.md','DISCLAIMER.md','docs/windows.md') |
     ForEach-Object { (Resolve-Path (Join-Path $repoRoot $_)).Path }
 $executable = (Resolve-Path (Join-Path $BuildDirectory 'lazykatok.exe')).Path
+$licenses = (Resolve-Path (Join-Path $repoRoot 'licenses')).Path
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 Copy-Item $executable $OutputDirectory
 Get-ChildItem $BuildDirectory -Filter '*.dll' -File | Copy-Item -Destination $OutputDirectory
@@ -24,8 +25,10 @@ Get-ChildItem $BuildDirectory -Filter '*.dll' -File | Copy-Item -Destination $Ou
 # so a fresh PC does not silently depend on that development environment.
 Get-ChildItem $crt[0].FullName -Filter '*.dll' -File | Copy-Item -Destination $OutputDirectory
 Copy-Item $documents $OutputDirectory
-$hashes = Get-ChildItem $OutputDirectory -File | Sort-Object Name | ForEach-Object {
+Copy-Item $licenses (Join-Path $OutputDirectory 'licenses') -Recurse
+$hashes = Get-ChildItem $OutputDirectory -File -Recurse | Sort-Object FullName | ForEach-Object {
     $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$hash  $($_.Name)"
+    $relative = [IO.Path]::GetRelativePath($OutputDirectory, $_.FullName).Replace('\', '/')
+    "$hash  $relative"
 }
 $hashes | Set-Content (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding utf8NoBOM

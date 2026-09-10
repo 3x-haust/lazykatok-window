@@ -1,27 +1,6 @@
-# Third-party notices
-
-## Windows inference and C++ runtime
-
-The Windows build links ONNX Runtime 1.24.2 and bundles DirectML 1.15.4 from
-the pinned `ort-sys` distribution. Their license texts are included in
-`licenses/ONNX-RUNTIME-1.24.2.txt` and `licenses/DIRECTML-1.15.4.txt`.
-The DirectML binary is covered by the Microsoft DirectML software terms,
-which differ from the MIT license for code samples in its GitHub repository.
-
-The portable package also contains the x64 Microsoft C++ redistributable DLLs
-from the build toolchain's redistributable directory. Microsoft's distribution
-guidance is at https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files.
-
-## MoniKa
-
-The Windows database key candidate scan and encrypted page-header validation
-are adapted from MoniKa's `src/scanner.cpp` and `src/oracle.cpp` at commit
-`e8cff0013417cddb9592ac059164a58ae9276be3`:
-https://github.com/maxswjeon/MoniKa
-
 MIT License
 
-Copyright (c) 2026 Sangwan Jeon
+Copyright (c) Microsoft Corporation
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -10,7 +10,28 @@ mod cli;
 mod commands;
 mod support;
 
+#[cfg(windows)]
+fn configure_windows_inference() {
+    // Configure the process before fastembed can lazily initialize ONNX Runtime.
+    // Repeated calls keep the first configuration; this does not download a model.
+    ort::init().with_telemetry(false).commit();
+}
+
+#[cfg(all(test, windows))]
+mod windows_runtime_tests {
+    #[test]
+    fn bundled_inference_runtime_starts_without_model_downloads() {
+        super::configure_windows_inference();
+        let first = ort::environment::Environment::current().expect("create native runtime");
+        super::configure_windows_inference();
+        let second = ort::environment::Environment::current().expect("reuse native runtime");
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    configure_windows_inference();
     let cli = Cli::parse();
     let json = commands::command_requests_json(&cli.command);
     if let Err(error) = run(cli) {
