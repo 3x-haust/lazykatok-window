@@ -180,14 +180,7 @@ impl LocalVectorStore {
 }
 
 fn ensure_private_file(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(path).map_err(Error::Io)?.permissions();
-        permissions.set_mode(0o600);
-        std::fs::set_permissions(path, permissions).map_err(Error::Io)?;
-    }
-    Ok(())
+    crate::paths::ensure_private_file(path)
 }
 
 fn migrate(conn: &Connection) -> Result<()> {

@@ -1,5 +1,7 @@
 use crate::support::print_payload;
-use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
+use anyhow::Result;
 use serde::Serialize;
 
 const FULL_DISK_ACCESS_URL: &str =

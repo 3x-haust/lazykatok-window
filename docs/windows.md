@@ -87,7 +87,9 @@ not supported features.
 
 ## Local data
 
-The default application directory is `%LOCALAPPDATA%\katok`. Windows source
+The default application directory is `%LOCALAPPDATA%\katok`. The program applies
+a protected access-control list for the current Windows user to its data
+directories. Paths that cannot enforce it, including reparse points, fail. Windows source
 databases are opened read-only. Candidate keys and validated keys remain in
 process memory and are not logged or persisted. Raw process dumps are never
 created. Conversations are not uploaded; semantic models may be downloaded.
