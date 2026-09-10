@@ -12,6 +12,9 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ("lazykatok 한글 package " + [
 $originalPath = $env:PATH
 $originalEmbedder = $env:KATOK_EMBEDDER
 $package = (Resolve-Path $PackageDirectory).Path
+if (-not (Test-Path (Join-Path $package 'DirectML.dll') -PathType Leaf)) {
+    throw 'The pinned Windows inference runtime requires its bundled DirectML.dll'
+}
 $fixturePath = (Resolve-Path $Fixture).Path
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {

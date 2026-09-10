@@ -134,6 +134,9 @@ pub async fn index_semantic_live_for_parents(
     let batch_size = config.embedding_batch_size.max(1);
     let embedding_calls = embed_pending(&store, &mut *embedder, &pending, batch_size)?;
     save_cursor(&staging, &revision, embedder.id(), embedded_texts)?;
+    // Windows does not allow renaming a directory containing an open SQLite file.
+    // Release the writer before validating and publishing this generation.
+    drop(store);
     validate_generation(archive, &staging, embedder.id(), config.vector_dimension)?;
 
     let generation = root.join(GENERATIONS_DIR).join(&generation_id);
